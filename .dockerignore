@@ -37,6 +37,9 @@ voice/**
 **/*.safetensors
 **/*.bin
 studio/models
+# The desktop app is distributed separately; retain only the Python package marker.
+studio/apps/**
+!studio/apps/__init__.py
 prompt/logs
 results
 voicemem_memoryspace

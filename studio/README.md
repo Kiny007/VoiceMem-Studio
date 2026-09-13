@@ -24,13 +24,17 @@ studio/
     reply_modes/policy.py
     turn_taking/policy.py
   web/                       # 浏览器、HTTP/WebSocket、AudioWorklets
-  apps/
+  apps/                      # Windows/macOS App、桌宠、配置页和打包配置
 ```
 
 ## 启动
 
 Linux/NVIDIA 的完整 Docker 部署及 Mac 原生部署见 [部署说明](../docker/README.md)。
 Linux 在 `.env` 配置好 API Key 后可直接执行 `docker compose up -d --build`。
+
+Windows/macOS 可以使用内置桌宠的 [桌面 App](apps/README.md)，复用当前 Web 界面。
+Windows 本机 CUDA 后端放在 WSL2，Mac 使用原生 MLX；Linux 只运行后端，不自动启动桌宠。
+自动启动能力与待验证内容见 [平台设计](apps/PLATFORMS.md)。
 
 安装好对应的 Python 3.12 环境后，在项目根目录启动。Linux / NVIDIA 使用：
 

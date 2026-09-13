@@ -1,0 +1,51 @@
+{
+  "name": "voicemem-studio-desktop",
+  "productName": "VoiceMem Studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VoiceMem Studio desktop client with optional local Docker startup",
+  "license": "Apache-2.0",
+  "author": "VoiceMem Studio contributors",
+  "main": "main.cjs",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "prepare:pet": "node scripts/prepare-pet.cjs",
+    "prestart": "npm run prepare:pet",
+    "start": "node launch.cjs",
+    "test": "node --test evals/*.test.cjs",
+    "prepack": "npm run prepare:pet",
+    "pack": "electron-builder --dir",
+    "predist:win": "npm run prepare:pet",
+    "dist:win": "electron-builder --win nsis --x64",
+    "predist:mac": "npm run prepare:pet",
+    "dist:mac": "electron-builder --mac dmg zip --arm64",
+    "predist:mac:x64": "npm run prepare:pet",
+    "dist:mac:x64": "electron-builder --mac dmg zip --x64"
+  },
+  "devDependencies": {
+    "@pixi/unsafe-eval": "6.5.10",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "6.5.10",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "org.voicemem.studio",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": { "output": "dist" },
+    "files": ["main.cjs", "runtime.cjs", "preload.cjs", "pet-window.cjs", "pet-preload.cjs", "pet-policy.cjs", ".pet-runtime/**/*", "launcher.html", "launcher.css", "launcher.js", "assets/icon.png", "package.json"],
+    "extraResources": [{ "from": "../../LICENSE", "to": "LICENSE.txt" }],
+    "artifactName": "VoiceMem-Studio-${version}-${os}-${arch}.${ext}",
+    "win": { "target": ["nsis"], "icon": "assets/icon.png" },
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.png",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "extendInfo": { "NSMicrophoneUsageDescription": "VoiceMem Studio 使用麦克风与你进行语音对话，仅在你开始倾听时采集音频。" }
+    }
+  }
+}

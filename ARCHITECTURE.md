@@ -140,8 +140,9 @@ host inference proxy is added. Neither deployment changes memory semantics,
 provider contracts, speech segmentation or model scheduling.
 The native setup also installs the locked desktop-pet dependencies. Headless
 containers disable spawning Electron through `STUDIO_DESKTOP_PET=0` while
-retaining the upstream pet-observer WebSocket and events. Native launches keep
-the upstream automatic pet lifecycle by default.
+retaining the upstream pet-observer WebSocket and events. Linux, including WSL,
+never auto-spawns the desktop pet even when the environment flag is enabled.
+Native macOS launches keep the optional automatic pet lifecycle by default.
 
 `studio/core/voicemem.py` is the integration boundary for creating VoiceMem and
 opening its native stream. The current deployment is one process: memory is
@@ -151,7 +152,47 @@ worker/epoch guards remain in VoiceMem because the memory package also uses them
 `studio/core/utils/asr/` initializes shared recognizers from Studio weight paths.
 
 `studio/web/` owns browser assets, HTTP/WebSocket transport, and the pet bridge.
-`studio/apps/` is available for application integrations. Original `web/run.py`
+`studio/apps/` owns the Windows/macOS Electron desktop client and pet. Linux is
+a backend deployment target, not a desktop release target. Windows runs capture,
+playback and the pet natively, while local CUDA inference belongs in WSL2 or its
+Docker backend. macOS uses native MLX or a remote service. Both clients share
+the same Web UI and observer contracts. The desktop client's main
+window loads the backend's existing Web page without a renderer fork. A local
+configuration page owns the restricted settings IPC; the Studio renderer has no
+preload bridge or Node integration. Both renderers use context isolation and
+sandboxing. Microphone requests are limited to main-frame audio from the selected
+origin and require user approval; remote connections require HTTPS, while HTTP
+is accepted only on loopback. Settings and browser state live in the desktop
+application-data directory, not in the backend's memory or credential files.
+
+On Windows, an opt-in configuration setting can start an existing local NVIDIA
+Compose service through a local Docker named pipe. Docker Desktop must already
+be running with its WSL2 backend; the app never starts or installs the Docker
+engine or WSL itself. The Unix-socket path remains available to isolated Linux
+development tests, not as a Linux desktop release. Startup uses the user-approved project and optional local override,
+never builds or pulls an image or recreates an existing container, reads the published port and waits for the Web
+page to become ready. Connection attempts own cancellable CLI and readiness
+work; stale attempts cannot replace a newer window. Closing the app never stops
+the shared container. Direct management of WSL Python or a native MLX process
+is not yet implemented; macOS connects to an already running native MLX or remote GPU service;
+there is no Metal-in-Docker path. Desktop packages contain the shell, Electron
+runtime and pet display resources, not inference weights, Python, recordings,
+credentials or memory data.
+
+The desktop app also owns one optional transparent pet window in the same
+Electron application. Packaging selects the existing `pet/` renderer, animation,
+observer and Live2D resources without forking them or bundling another Electron.
+Only generated HTML asset references, connection CSP and the close-button label
+are adapted for the desktop package. Its isolated preload exposes window controls,
+not Docker or settings APIs; IPC validates the pet's exact main frame and document.
+The pet session permits only bundled resources and the selected `/ws-pet` endpoint,
+denies device permissions, and does not start a conversation. Service changes close
+the old observer before opening the new one; closing the Studio window closes the
+pet. Position lives in desktop app data. Native users can disable the backend's
+automatic pet with the existing `STUDIO_DESKTOP_PET=0` to avoid duplicate windows;
+containers already do this. The standalone pet and Web playback contracts remain unchanged.
+
+Original `web/run.py`
 and moved provider modules remain thin compatibility entry points; executable
 Studio implementations have one owner under `studio/`.
 
@@ -646,8 +687,9 @@ Interruption separates reversible detection from cancellation:
 Generated, sent, buffered, rendered, and heard output are different states. The
 unheard generated tail is not conversation history.
 
-The HTTP application starts its supervised desktop pet during server startup,
+On a supported native desktop platform, the HTTP application can start its supervised desktop pet during server startup,
 using the configured listening port, and stops that process during server shutdown.
+Linux/WSL skips process startup while retaining all pet broadcast routes.
 Opening the browser page is not required to launch the pet.
 The optional desktop pet observes the existing pet WebSocket without starting
 another conversation. Its renderer follows output-identified playback checkpoints

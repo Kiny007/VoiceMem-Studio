@@ -41,6 +41,12 @@ Compose 只分配宿主机 GPU 0，容器内部 ASR/Router/TTS 都使用 `cuda:0
 Docker 使用 `STUDIO_DESKTOP_PET=0` 禁用本地 Electron 窗口，但保留 `/ws-pet` 事件通道。
 Mac 原生启动保留上游随服务启动桌宠的行为，环境准备脚本同时安装 `pet/package-lock.json` 中的依赖。
 
+也可以从 Windows/macOS 的 [Studio 桌面 App](../studio/apps/README.md) 连接后端。
+App 和桌宠在用户电脑运行；Linux/WSL 只运行后端，不自动启动桌宠，也不需要 Electron。
+Windows 的本机 CUDA 路线使用 WSL2；已有 Docker Desktop 的用户可复用同一个 Linux 镜像。
+App 的 Windows Docker 启动适配只操作已配置好的本机 Compose 服务，不构建或拉取镜像，不修改 `.env` 或卷。
+Windows/WSL 整体运行仍需实机验收，见 [平台设计与实现状态](../studio/apps/PLATFORMS.md)。
+
 默认使用 Debian 官方 HTTPS 软件源。网络较慢时，可选用镜像构建参数；
 安全更新仍使用官方源，签名校验保持开启：
 

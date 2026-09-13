@@ -28,6 +28,9 @@ class PetSupervisor:
 
     def ensure_running(self, ws_url: str) -> None:
         """Start the pet process once and reuse it on later requests."""
+        # Linux, including WSL, owns inference only; desktop windows belong to the client OS.
+        if sys.platform not in {'darwin', 'win32'}:
+            return
         if os.environ.get('STUDIO_DESKTOP_PET', '1').strip().lower() in {'0', 'false', 'off', 'no'}:
             return
         with self._lock:

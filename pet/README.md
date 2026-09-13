@@ -2,6 +2,10 @@
 
 飘在所有窗口最上层的 Live2D 桌宠，助手出声时跟着动嘴，不出声时安静待机。
 
+桌宠面向 Windows/macOS 本地桌面；Linux/WSL 后端只广播事件，不自动创建桌宠窗口。
+使用 [Studio 桌面 App](../studio/apps/README.md) 时，桌宠已内置，无需在本目录安装依赖或单独启动。
+以下命令仍适用于独立桌宠；App 打包直接复用这里的渲染与动画文件。
+
 来源是 `Noctelle-Live2D-0.3.1-Windows` 那个发行包里的 `resources/app.asar`——
 Electron 的 asar 只是打包容器不是编译，解开就是完整源码。这份是解出来之后去掉
 Windows 运行时、只保留跨平台部分的版本，另外加了 `voicemem-link.js`。
