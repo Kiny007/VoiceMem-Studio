@@ -33,7 +33,7 @@
     if(message.type==='conversation_started'){speaking=false;resting=false;wake(true);armRest();return;}
     if(message.type==='user_voice'){voice(message.active===true);return;}
     if(message.type==='conversation_ended'){voice(false);reset();return;}
-    if(message.type==='backchannel'){action('Nod');return;}
+    if(message.type==='backchannel'){action('tilt');return;}
     if(message.type==='answer_interrupt'){reset();return;}
     if(message.type!=='playback_checkpoint')return;
     const id=message.output_id;

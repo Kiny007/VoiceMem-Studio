@@ -45,16 +45,7 @@ else {
       if(['sit','lie'].includes(pose)&&mode!==pose)setMode(pose);
       else if(mode==='dot')setMode('lie');
     });
-    ipcMain.on('actions', () => Menu.buildFromTemplate([
-      { label: '坐姿', type: 'radio', checked: mode === 'sit', click: () => setMode('sit') },
-      { label: '躺姿', type: 'radio', checked: mode === 'lie', click: () => setMode('lie') },
-      { type: 'separator' },
-      ...[['歪头笑', 'tilt'], ['点头', 'Nod'], ['摇头', 'Shake']].map(([label, action]) => ({
-        label, enabled: mode === 'sit', click: () => win.webContents.send('action', action)
-      }))
-    ]).popup({ window: win }));
     ipcMain.on('collapse', () => setMode('dot'));
-    ipcMain.on('quit', () => app.quit());
     ipcMain.on('pointer', (_e, hit) => { if (!dragging) win.setIgnoreMouseEvents(!hit, { forward: true }); });
     ipcMain.on('drag-start', () => { dragging = { cursor: screen.getCursorScreenPoint(), bounds: win.getBounds() }; });
     ipcMain.on('drag-move', () => {
@@ -68,7 +59,7 @@ else {
     const pixels = Buffer.alloc(16 * 16 * 4);
     for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) { const i = (y * 16 + x) * 4; pixels[i] = 232; pixels[i+1] = 173; pixels[i+2] = 168; pixels[i+3] = Math.hypot(x-7.5,y-7.5) < 6 ? 255 : 0; }
     tray = new Tray(nativeImage.createFromBitmap(pixels, { width: 16, height: 16 }));
-    tray.setToolTip('雾铃 Noctelle');
+    tray.setToolTip('VoiceMem 雾铃');
     tray.setContextMenu(Menu.buildFromTemplate([{ label: '展开 / 收起', click: toggle }, { label: '找回小点', click: () => { anchor = { x: area.x+area.width-24,y:area.y+area.height-24 }; setMode('dot'); win.show(); save(); } }, { type: 'separator' }, { label: '退出', click: () => app.quit() }]));
     tray.on('click', toggle);
     screen.on('display-removed', () => setMode(mode));
@@ -87,7 +78,7 @@ else {
         for (const pose of ['dot','sit','lie','dot']) {
           setMode(pose);
           await new Promise(r => setTimeout(r, 200));
-          const result = await win.webContents.executeJavaScript(`({mode:document.body.dataset.mode, imageReady:document.querySelector('#portrait').complete && document.querySelector('#portrait').naturalWidth > 0, nodeExposed:typeof process !== 'undefined'})`);
+          const result = await win.webContents.executeJavaScript(`({mode:document.body.dataset.mode, imageReady:document.querySelector('#live').width > 0, nodeExposed:typeof process !== 'undefined'})`);
           if (result.mode !== pose || (pose !== 'dot' && !result.imageReady) || result.nodeExposed) throw new Error(JSON.stringify(result));
           if(pose!=='dot') {
             let status;
@@ -96,7 +87,7 @@ else {
               if((status.ready&&status.pose===pose)||status.error)break;
               await new Promise(r=>setTimeout(r,100));
             }
-            if(!status.ready||status.pose!==pose)throw new Error('Cubism load failed: '+JSON.stringify(status));
+            if(!status.ready||status.pose!==pose)throw new Error('Avatar load failed: '+JSON.stringify(status));
             const diagnostics=await win.webContents.executeJavaScript(`(()=>{
               const common={ParamAngleX:0,ParamAngleY:0,ParamAngleZ:2,ParamBreath:.5,ParamEyeLOpen:1,ParamEyeROpen:1};
               const closed=petRig.inspectPose({...common,ParamMouthOpenY:0});
@@ -123,19 +114,14 @@ else {
             if(hitCheck.outside||!hitCheck.inside)throw new Error('Alpha hit test failed: '+JSON.stringify(hitCheck));
             results.push({pose,concurrentAnimation:true,alphaHitTest:true});
             if(pose==='sit'){
-              for(const t of [0,.8,1.6,2.2,3,4]){
-                await win.webContents.executeJavaScript(`petRig.inspectPose(TiltedSmile.compose({ParamAngleX:0,ParamAngleY:0,ParamAngleZ:0,ParamEyeLOpen:1,ParamEyeROpen:1,ParamMouthForm:0,ParamMouthOpenY:0,ParamBreath:.5},${t}))`);
-                await new Promise(r=>setTimeout(r,80));
-                fs.writeFileSync(path.join(checksDir,'smile-'+t+'.png'),(await win.webContents.capturePage()).toPNG());
-              }
-              await win.webContents.executeJavaScript(`petRig.show('sit').then(()=>document.querySelector('#tilt').click())`);
+              await win.webContents.executeJavaScript(`petRig.show('sit').then(()=>petRig.tilt())`);
               await new Promise(r=>setTimeout(r,1700));
               const held=await win.webContents.executeJavaScript(`(()=>{const s=petRig.status();return {action:s.action,eyes:s.parameters.ParamEyeLOpen,smile:s.parameters.ParamMouthForm,retrigger:petRig.tilt()}})()`);
               if(held.action!=='tilted-smile'||held.eyes>.05||held.smile<.8||held.retrigger)throw new Error('Smile button / hold failed: '+JSON.stringify(held));
               const coexist=await win.webContents.executeJavaScript(`(()=>{
-                const b={ParamAngleZ:0,ParamEyeLOpen:1,ParamEyeROpen:1,ParamBreath:.5};
-                const closed=petRig.inspectPose(TiltedSmile.compose(b,2,'sit',0));
-                const open=petRig.inspectPose(TiltedSmile.compose(b,2,'sit',1));
+                const b={ParamAngleZ:-10,ParamEyeLOpen:0,ParamEyeROpen:0,ParamMouthForm:1,ParamBreath:.5};
+                const closed=petRig.inspectPose({...b,ParamMouthOpenY:0});
+                const open=petRig.inspectPose({...b,ParamMouthOpenY:1});
                 const equal=(a,b)=>a.length===b.length&&a.every((v,i)=>Math.abs(v-b[i])<1e-7);
                 return !equal(closed.ArtMeshMouthOpen,open.ArtMeshMouthOpen)&&equal(closed.ArtMeshFace,open.ArtMeshFace)&&equal(closed.ArtMeshTopwear,open.ArtMeshTopwear);
               })()`);
@@ -148,7 +134,7 @@ else {
         await win.webContents.executeJavaScript("document.querySelector('#dot').click()");
         await new Promise(r => setTimeout(r, 200));
         if (!['sit','lie'].includes(mode)) throw new Error('Wake click failed');
-        await win.webContents.executeJavaScript("document.querySelector('#collapse').click()");
+        await win.webContents.executeJavaScript("window.pet.collapse()");
         await new Promise(r => setTimeout(r, 200));
         if (mode !== 'dot') throw new Error('Collapse click failed');
         results.push({ wakeClick: true, collapseClick: true });
