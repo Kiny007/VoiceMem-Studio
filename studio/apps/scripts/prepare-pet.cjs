@@ -3,6 +3,13 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const sourceFiles = [
+  'style.css', 'state.cjs', 'renderer.js', 'avatar-rig.js', 'scene.js', 'voicemem-link.js',
+  'assets/avatar/calm.png', 'assets/avatar/talk.png', 'assets/avatar/blink.png',
+  'assets/avatar/squint-smile.png', 'assets/scene/curtains.png', 'THIRD_PARTY_NOTICES.md',
+];
+
+// Recognize the previous generated layout only to preserve it during migration.
+const legacyFiles = [
   'style.css', 'state.cjs', 'renderer.js', 'rig.js', 'voicemem-link.js',
   'tilted-smile.js', 'transparency.js', 'face-calibration.js', 'motion-calibration.js',
   'assets/sit.png', 'assets/lie.png', 'vendor/live2dcubismcore.min.js', 'THIRD_PARTY_NOTICES.md',
@@ -11,48 +18,23 @@ const sourceFiles = [
       .map(suffix => `models/${pose}/noctelle-${pose}.${suffix}`),
     `models/${pose}/noctelle-${pose}.2048/texture_00.png`,
   ]),
-];
-const vendors = [
-  ['pixi.js', 'dist/browser/pixi.min.js', 'pixi.min.js'],
-  ['@pixi/unsafe-eval', 'dist/browser/unsafe-eval.min.js', 'unsafe-eval.min.js'],
-  ['pixi-live2d-display', 'dist/cubism4.min.js', 'cubism4.min.js'],
+  'vendor/pixi.min.js', 'vendor/unsafe-eval.min.js', 'vendor/cubism4.min.js',
+  'vendor/pixi.js.LICENSE.txt', 'vendor/@pixi-unsafe-eval.LICENSE.txt', 'vendor/pixi-live2d-display.LICENSE.txt',
 ];
 
 function desktopHtml(html) {
-  for (const [pkg, source, destination] of vendors) {
-    const reference = `node_modules/${pkg}/${source}`;
-    if (!html.includes(reference)) throw new Error(`Pet asset reference changed: ${reference}`);
-    html = html.replace(reference, `vendor/${destination}`);
-  }
   const policy = /connect-src [^;]+;/;
   if (!policy.test(html)) throw new Error('Pet connection policy is missing.');
   // The dedicated Electron session further restricts this to the selected observer URL.
-  return html.replace(policy, "connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* wss:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none';")
-    .replace('id="quit" title="退出" aria-label="退出"', 'id="quit" title="隐藏桌宠" aria-label="隐藏桌宠"');
+  return html.replace(policy, "connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* wss:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none';");
 }
 
-async function preparePet({ apps = path.resolve(__dirname, '..'), destination = path.join(apps, '.pet-runtime') } = {}) {
-  const source = path.resolve(apps, '../../pet');
-  await fs.mkdir(destination, { recursive: true });
-  const inventory = ['index.html', ...sourceFiles];
-  for (const file of sourceFiles) {
-    await fs.mkdir(path.dirname(path.join(destination, file)), { recursive: true });
-    await fs.copyFile(path.join(source, file), path.join(destination, file));
-  }
-  await fs.writeFile(path.join(destination, 'index.html'), desktopHtml(await fs.readFile(path.join(source, 'index.html'), 'utf8')));
-  for (const [pkg, entry, name] of vendors) {
-    const root = path.join(apps, 'node_modules', pkg);
-    await fs.copyFile(path.join(root, entry), path.join(destination, 'vendor', name));
-    const license = (await fs.readdir(root)).find(file => /^licen[cs]e(?:\.md|\.txt)?$/i.test(file));
-    if (!license) throw new Error(`Missing package license: ${pkg}`);
-    const notice = `vendor/${pkg.replaceAll('/', '-')}.LICENSE.txt`;
-    await fs.copyFile(path.join(root, license), path.join(destination, notice));
-    inventory.push(`vendor/${name}`, notice);
-  }
-  // Reject stale or extra files instead of accidentally shipping local pet experiments.
+async function listFiles(directory) {
+  const info = await fs.lstat(directory);
+  if (!info.isDirectory()) throw new Error('Pet build directory must be a real directory.');
   const actual = [];
   async function visit(relative = '') {
-    for (const entry of await fs.readdir(path.join(destination, relative), { withFileTypes: true })) {
+    for (const entry of await fs.readdir(path.join(directory, relative), { withFileTypes: true })) {
       const file = path.posix.join(relative, entry.name);
       if (entry.isDirectory()) await visit(file);
       else if (entry.isFile()) actual.push(file);
@@ -60,10 +42,34 @@ async function preparePet({ apps = path.resolve(__dirname, '..'), destination = 
     }
   }
   await visit();
-  if (actual.sort().join('\n') !== inventory.sort().join('\n')) throw new Error('Unexpected files in generated .pet-runtime; inspect the build directory before packaging.');
+  return actual;
+}
+
+async function preparePet({ apps = path.resolve(__dirname, '..'), destination = path.join(apps, '.pet-runtime') } = {}) {
+  const source = path.resolve(apps, '../../pet');
+  const inventory = ['index.html', ...sourceFiles];
+  const html = desktopHtml(await fs.readFile(path.join(source, 'index.html'), 'utf8'));
+  for (const file of sourceFiles) await fs.access(path.join(source, file));
+  let actual;
+  try { actual = await listFiles(destination); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; actual = []; }
+  const known = new Set([...inventory, ...legacyFiles]);
+  if (actual.some(file => !known.has(file))) throw new Error('Unexpected files in generated .pet-runtime; inspect the build directory before packaging.');
+  if (actual.some(file => !inventory.includes(file))) {
+    const backup = await fs.mkdtemp(`${destination}.previous-`);
+    await fs.rename(destination, path.join(backup, 'resources'));
+    console.log(`[desktop] Previous pet resources preserved at ${backup}`);
+  }
+  await fs.mkdir(destination, { recursive: true });
+  for (const file of sourceFiles) {
+    await fs.mkdir(path.dirname(path.join(destination, file)), { recursive: true });
+    await fs.copyFile(path.join(source, file), path.join(destination, file));
+  }
+  await fs.writeFile(path.join(destination, 'index.html'), html);
+  if ((await listFiles(destination)).sort().join('\n') !== [...inventory].sort().join('\n')) throw new Error('Pet resource inventory mismatch.');
   return inventory;
 }
 
 if (require.main === module) preparePet().then(files => console.log(`[desktop] Pet resources prepared: ${files.length} files`))
   .catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { sourceFiles, vendors, desktopHtml, preparePet };
+module.exports = { sourceFiles, desktopHtml, preparePet };

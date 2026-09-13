@@ -29,15 +29,18 @@ npm start
 ## App 内置桌宠
 
 连接成功后默认显示雾铃，作为同一个 App 的透明置顶窗口，不再单独启动 Electron 或安装 `pet` 依赖。
-菜单 **Studio → 显示桌宠** 控制本次运行中的显示/隐藏；桌宠的 × 只隐藏桌宠，不退出主窗口。
-**找回桌宠位置** 将它移回主屏幕。拖拽、收起、坐姿/躺姿和动作继续使用现有交互。
+菜单 **Studio → 显示桌宠** 控制本次运行中的显示/隐藏，不退出主窗口。
+**找回桌宠位置** 将它移回主屏幕。拖拽、双击收起和唤醒继续使用原版交互。
 
 - 原版 `pet/` 的渲染、动画与 `voicemem-link.js` 保留为唯一来源，不修改它的独立启动方式。
 - 桌宠通过当前后端的 `/ws-pet` 只读观察真实播放进度、附和、打断和断线，不采集麦克风、不创建第二段对话。
 - 切换服务会关闭旧桌宠连接；关闭 Studio 主窗口或退出 App 会关闭内置桌宠，Docker 后端继续运行。
-- 打包包含坐姿/躺姿 Live2D 素材、贴图、Cubism Core 和固定版本 Pixi 依赖，桌宠不从 CDN 下载资源。
+- 打包包含原版 `avatar-rig.js`、`scene.js`、四张人物图片及窗帘背景；使用 Canvas，不依赖 Pixi、Cubism、WASM 或 CDN。
+- 保留 `sit` / `lie` 作为交互/休息状态，尺寸由原版 `state.cjs` 决定；附和触发歪头笑，嘴型仍跟随实际播放。
 - 源码运行和打包自动执行 `prepare:pet`，按白名单生成忽略于 Git 的 `.pet-runtime/`。
-  不打包 `pet/checks`、Cubism 编辑工程、PSD2Live 工具或第二份 Electron。
+  不打包 `pet/checks`、旧模型、旧第三方运行库或第二份 Electron。
+- 检测到旧 Live2D 构建缓存时，先移到 `.pet-runtime.previous-*/resources/` 再生成新资源；备份不进入 Git 或安装包。
+  不认识的额外文件会使准备步骤报错，不会被删除或意外打包。
 
 Linux/WSL 后端不会自动启动桌宠，Docker 也保留 `STUDIO_DESKTOP_PET=0`。
 如果 App 连接同一台 Mac 的原生后端，启动后端时关闭它原来的自动桌宠，避免出现两只：
@@ -96,8 +99,8 @@ Mac 正式分发需开发者签名和公证；仓库提供麦克风用途说明�
 - 麦克风仅对配置的服务主页面授权，不授权摄像头、屏幕录制或第三方 iframe。
 - 连接设置和页面缓存位于操作系统的 VoiceMem Studio 应用数据目录；不会导入浏览器私有缓存。
 - 桌面包不含 `.env`、模型、记忆库、录音或运行日志。后端数据继续使用原位置或 Docker 卷。
-- 上述模型指 ASR/TTS/LLM 等推理权重；内置桌宠的 Live2D 显示素材是 App 资源。
-- 桌宠第三方声明与依赖许可证随包保留；Cubism Core 和角色素材沿用原有许可边界，打包不代表新增公开再分发授权。
+- 上述模型指 ASR/TTS/LLM 等推理权重；内置桌宠的 PNG 显示素材是 App 资源。
+- 桌宠原版第三方声明随包保留；角色素材沿用原有许可边界，打包不代表新增公开再分发授权。
 - `VOICEMEM_DESKTOP_USER_DATA` 可以指定独立桌面配置目录，适合隔离测试。
 
 ## 验证
@@ -108,7 +111,9 @@ npm test
 
 Linux 可用 `node scripts/smoke.cjs` 在 Xvfb 中验证真实窗口。它只使用临时假后端和假 Docker，
 不调用真实容器、不打开个人记忆、不采集麦克风；截图留在其输出的临时目录。
-它加载实际 Live2D 模型，用合成的 `/ws-pet` 事件验证嘴型、暂停/断线、服务切换及隐藏窗口。
+它加载实际 Canvas 人物和场景，用合成的 `/ws-pet` 事件验证嘴型、附和歪头笑、打断、暂停/断线、服务切换及隐藏窗口。
+`node scripts/smoke.cjs --asar` 先按打包白名单生成临时 ASAR，再验证归档内的共享客户端和资源；不生成 Linux 安装包。
+`--keep-pet-on-exit` 额外验证关闭主窗口时仍显示的桌宠一起退出。
 可以用 `VOICEMEM_DESKTOP_BINARY` 指向已打包的程序，`VOICEMEM_XVFB` 指定 Xvfb。
 `VOICEMEM_TEST_TMP` 指定临时目录；受控 root 测试额外要求 `VOICEMEM_SMOKE_ALLOW_ROOT=1`，
 仅该测试启动器会临时使用 `--no-sandbox`。实际麦克风、音频设备和 Mac 权限仍需在目标桌面验收。

@@ -7,8 +7,8 @@
   {
     "ready": true,
     "pose": "sit",
-    "mouthVertices": 26,
-    "bodyVertices": 2550,
+    "mouthVertices": 1,
+    "bodyVertices": 2,
     "mouthChanges": true,
     "headUnaffected": true,
     "bodyUnaffected": true
@@ -32,8 +32,8 @@
   {
     "ready": true,
     "pose": "lie",
-    "mouthVertices": 26,
-    "bodyVertices": 2212,
+    "mouthVertices": 1,
+    "bodyVertices": 2,
     "mouthChanges": true,
     "headUnaffected": true,
     "bodyUnaffected": true

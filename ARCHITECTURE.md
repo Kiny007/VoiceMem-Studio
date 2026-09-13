@@ -181,9 +181,11 @@ credentials or memory data.
 
 The desktop app also owns one optional transparent pet window in the same
 Electron application. Packaging selects the existing `pet/` renderer, animation,
-observer and Live2D resources without forking them or bundling another Electron.
-Only generated HTML asset references, connection CSP and the close-button label
-are adapted for the desktop package. Its isolated preload exposes window controls,
+observer and Canvas/PNG resources without forking them or bundling another Electron.
+The renderer and scene require no Pixi, Cubism or WASM runtime. Only the generated
+HTML connection CSP is adapted for the desktop package. Resource preparation
+backs up recognized legacy build output before migration, excludes backups from
+the package, and rejects unknown files. Its isolated preload exposes window controls,
 not Docker or settings APIs; IPC validates the pet's exact main frame and document.
 The pet session permits only bundled resources and the selected `/ws-pet` endpoint,
 denies device permissions, and does not start a conversation. Service changes close
@@ -694,11 +696,12 @@ Opening the browser page is not required to launch the pet.
 The optional desktop pet observes the existing pet WebSocket without starting
 another conversation. Its renderer follows output-identified playback checkpoints
 for mouth movement and uses interruption/disconnect handling plus a bounded
-watchdog to close the mouth. Backchannel notifications drive nods; completed
+watchdog to close the mouth. Backchannel notifications drive tilts; completed
 playback can select one random tilt. Linked mode disables timer-driven tilts,
 and pending actions wait for the required pose to finish loading. The pet starts
-lying down. Conversation startup and detected user voice select the sitting pose;
-a local silence timer returns it to lying down. VAD transitions come from the
+in the `lie` resting state. Conversation startup and detected user voice select
+the `sit` interaction state; a local silence timer returns it to rest. These states
+share the Canvas avatar and scene rather than separate Live2D poses. VAD transitions come from the
 existing capture state or realtime provider, not raw microphone packet arrival.
 Conversation closure clears active voice state; resting suppresses random gestures.
 

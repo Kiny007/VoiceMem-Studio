@@ -7,9 +7,8 @@ const on = (name, callback) => ipcRenderer.on(`studio-pet:${name}`, (_event, val
 contextBridge.exposeInMainWorld('pet', {
   initial: () => ipcRenderer.invoke('studio-pet:initial'),
   onMode: callback => on('mode', callback),
-  onAction: callback => on('action', callback),
-  actions: () => send('actions'), toggle: () => send('toggle'),
+  toggle: () => send('toggle'),
   collapse: () => send('collapse'), activate: pose => send('activate', pose),
-  quit: () => send('hide'), pointer: hit => send('pointer', Boolean(hit)),
+  pointer: hit => send('pointer', Boolean(hit)),
   dragStart: () => send('drag-start'), dragMove: () => send('drag-move'), dragEnd: () => send('drag-end'),
 });

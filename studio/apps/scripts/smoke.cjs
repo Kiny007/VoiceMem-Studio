@@ -42,6 +42,27 @@ async function main() {
   const apps = path.resolve(__dirname, '..');
   if (!process.env.VOICEMEM_DESKTOP_BINARY) await require('./prepare-pet.cjs').preparePet();
   const directory = await fs.mkdtemp(path.join(process.env.VOICEMEM_TEST_TMP || os.tmpdir(), 'studio-desktop-smoke-'));
+  let appEntry = apps;
+  const asar = process.argv.includes('--asar');
+  if (asar) {
+    if (process.env.VOICEMEM_DESKTOP_BINARY) throw new Error('Choose an ASAR payload check or an installed-binary check, not both.');
+    const payload = path.join(directory, 'payload');
+    await fs.mkdir(payload);
+    const pkg = JSON.parse(await fs.readFile(path.join(apps, 'package.json'), 'utf8'));
+    for (const file of pkg.build.files) {
+      const resource = file === '.pet-runtime/**/*' ? '.pet-runtime' : file;
+      assert.equal(resource.includes('*'), false, 'Update the payload test for this file selector.');
+      await fs.mkdir(path.dirname(path.join(payload, resource)), { recursive: true });
+      await fs.cp(path.join(apps, resource), path.join(payload, resource), { recursive: true });
+    }
+    appEntry = path.join(directory, 'app.asar');
+    const archive = require('@electron/asar');
+    await archive.createPackage(payload, appEntry);
+    const files = archive.listPackage(appEntry);
+    assert.ok(files.includes('/.pet-runtime/avatar-rig.js'));
+    assert.ok(files.includes('/.pet-runtime/assets/scene/curtains.png'));
+    assert.equal(files.some(file => /previous-|node_modules|vendor\/|models\/|checks\//.test(file)), false);
+  }
   const profile = path.join(directory, 'profile'), project = path.join(directory, 'project'), bin = path.join(directory, 'bin');
   for (const dir of [profile, project, bin]) await fs.mkdir(dir);
   for (const name of ['compose.yaml', 'pyproject.toml']) await fs.writeFile(path.join(project, name), 'synthetic fixture');
@@ -96,7 +117,7 @@ async function main() {
     delete env.DOCKER_HOST;
     delete env.DOCKER_CONTEXT;
     const executable = process.env.VOICEMEM_DESKTOP_BINARY || require('electron');
-    const args = [...(process.env.VOICEMEM_DESKTOP_BINARY ? [] : [apps]), '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${debugPort}`];
+    const args = [...(process.env.VOICEMEM_DESKTOP_BINARY ? [] : [appEntry]), '--disable-gpu', '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${debugPort}`];
     if (process.getuid?.() === 0) args.push('--no-sandbox');
     application = spawn(executable, args, { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     application.stdout.on('data', data => { appOutput += data; });
@@ -121,18 +142,27 @@ async function main() {
     const petTarget = await until(async () => (await pages()).find(page => page.url.includes('/.pet-runtime/index.html')));
     petClient = await devtools(petTarget.webSocketDebuggerUrl);
     async function petState() {
-      const result = await petClient.send('Runtime.evaluate', { expression: 'JSON.stringify({ ...window.petRig.status(), node:typeof require, settings:typeof window.studioDesktop, mode:document.body.dataset.mode })', returnByValue: true });
+      const result = await petClient.send('Runtime.evaluate', { expression: 'JSON.stringify({ ...window.petRig.status(), node:typeof require, settings:typeof window.studioDesktop, mode:document.body.dataset.mode, canvas2d:!!document.getElementById("live").getContext("2d"), scene:!!document.getElementById("leaves"), pixi:typeof window.PIXI })', returnByValue: true });
       return JSON.parse(result.result.value);
     }
     await until(async () => { const state = await petState(); if (state.error) throw new Error(state.error); return state.ready && state.pose === 'lie'; });
     assert.equal((await petState()).node, 'undefined');
     assert.equal((await petState()).settings, 'undefined');
+    assert.equal((await petState()).canvas2d, true);
+    assert.equal((await petState()).scene, true);
+    assert.equal((await petState()).pixi, 'undefined');
     await until(() => observers.get(backend).size === 1);
     broadcast(backend, { type: 'conversation_started' });
     await until(async () => (await petState()).pose === 'sit');
+    broadcast(backend, { type: 'backchannel' });
+    await until(async () => (await petState()).action === 'tilted-smile');
     broadcast(backend, { type: 'playback_checkpoint', output_id: 'smoke-output', state: 'playing' });
     await until(async () => (await petState()).parameters.ParamMouthOpenY > 0.05, 3000);
     broadcast(backend, { type: 'playback_checkpoint', output_id: 'smoke-output', state: 'paused' });
+    await until(async () => (await petState()).parameters.ParamMouthOpenY === 0);
+    broadcast(backend, { type: 'playback_checkpoint', output_id: 'smoke-output', state: 'playing' });
+    await until(async () => (await petState()).parameters.ParamMouthOpenY > 0.05, 3000);
+    broadcast(backend, { type: 'answer_interrupt' });
     await until(async () => (await petState()).parameters.ParamMouthOpenY === 0);
     const petScreenshot = await petClient.send('Page.captureScreenshot');
     await fs.writeFile(path.join(directory, 'pet.png'), Buffer.from(petScreenshot.data, 'base64'));
@@ -162,7 +192,7 @@ async function main() {
     await until(async () => (await petState()).parameters.ParamMouthOpenY === 0);
     const hidePet = !process.argv.includes('--keep-pet-on-exit');
     if (hidePet) {
-      await petClient.send('Runtime.evaluate', { expression: 'setTimeout(() => window.pet.quit(), 100)' });
+      await petClient.send('Runtime.evaluate', { expression: 'setTimeout(() => window.close(), 100)' });
       await until(async () => !(await pages()).some(page => page.url.includes('/.pet-runtime/index.html')));
     }
     assert.ok((await pages()).some(page => page.url === `${replacementOrigin}/`));
@@ -173,8 +203,8 @@ async function main() {
     catch (error) { console.error('Remaining windows:', (await pages()).map(page => ({ title: page.title, url: page.url }))); throw error; }
     assert.equal(application.exitCode, 0, `App exited by signal ${application.signalCode}`);
     await until(() => observers.get(replacement).size === 0);
-    console.log(JSON.stringify({ passed: true, packaged: !!process.env.VOICEMEM_DESKTOP_BINARY, dockerStartedOnce: true, reusedWebUi: true,
-      rendererIsolated: true, petModelsLoaded: true, petPlaybackAndDisconnect: true, petServiceSwitch: true,
+    console.log(JSON.stringify({ passed: true, packaged: !!process.env.VOICEMEM_DESKTOP_BINARY, asar, dockerStartedOnce: true, reusedWebUi: true,
+      rendererIsolated: true, canvasPetLoaded: true, backchannelTilt: true, petPlaybackAndDisconnect: true, petServiceSwitch: true,
       petHiddenSeparately: hidePet, petClosedWithStudio: !hidePet, appExit: true, screenshots: directory }, null, 2));
   } catch (error) {
     console.error(appOutput.slice(-6000));

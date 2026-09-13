@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, screen, session } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, session } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -45,7 +45,6 @@ function createPet({ onHidden = () => {} } = {}) {
     window = undefined;
     previous?.destroy();
   }
-  function hide() { close(); onHidden(); }
   function listen(name, handler) {
     ipcMain.on(`studio-pet:${name}`, (event, value) => {
       if (trustedSender(event, window, page)) handler(value);
@@ -58,7 +57,6 @@ function createPet({ onHidden = () => {} } = {}) {
   listen('toggle', () => setMode(mode === 'dot' ? selectPose() : 'dot'));
   listen('collapse', () => setMode('dot'));
   listen('activate', pose => { if (['sit', 'lie'].includes(pose) && mode !== pose) setMode(pose); else if (mode === 'dot') setMode('lie'); });
-  listen('hide', hide);
   listen('pointer', hit => { if (!dragging && typeof hit === 'boolean') window.setIgnoreMouseEvents(!hit, { forward: true }); });
   listen('drag-start', () => { dragging = { cursor: screen.getCursorScreenPoint(), bounds: window.getBounds() }; });
   listen('drag-move', () => {
@@ -70,14 +68,6 @@ function createPet({ onHidden = () => {} } = {}) {
     anchor = { x: fitted.x + fitted.width, y: fitted.y + fitted.height };
   });
   listen('drag-end', () => { dragging = undefined; clearTimeout(timer); timer = setTimeout(save, 250); });
-  listen('actions', () => Menu.buildFromTemplate([
-    ...['sit', 'lie'].map(pose => ({ label: pose === 'sit' ? '坐姿' : '躺姿', type: 'radio', checked: mode === pose, click: () => setMode(pose) })),
-    { type: 'separator' },
-    ...[['歪头笑', 'tilt'], ['点头', 'Nod'], ['摇头', 'Shake']].map(([label, action]) => ({
-      label, enabled: mode === 'sit', click: () => window?.webContents.send('studio-pet:action', action),
-    })),
-    { type: 'separator' }, { label: '隐藏桌宠', click: hide },
-  ]).popup({ window }));
   screen.on('display-removed', () => setMode(mode));
 
   async function open(origin) {
