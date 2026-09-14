@@ -1,8 +1,8 @@
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { SIZES, selectPose, fitBounds } = require('./state.cjs');
-let win, tray, mode = 'lie', anchor, dragging, saveTimer;
+const { SIZES, RESIZE_CORNERS, clampScale, scaledSize, resizeFromCorner, selectPose, fitBounds } = require('./state.cjs');
+let win, tray, mode = 'lie', anchor, dragging, resizing, saveTimer, scale = 1, manuallyCollapsed = false;
 const smoke = process.argv.includes('--smoke-test');
 // --ws=... 由 VoiceMem 后端拉起时传进来，原样转交给渲染进程里的 voicemem-link.js。
 // 不传就是原来那只独立桌宠，不会去连任何东西。
@@ -16,23 +16,34 @@ const link = argOf('ws');
 // 再缩成一个小点等人点，等于白启动了。
 const expanded = process.argv.includes('--expanded');
 const settingsFile = () => path.join(app.getPath('userData'), 'position.json');
-function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { fs.writeFileSync(settingsFile(), JSON.stringify(anchor)); } catch {} }, 250); }
-function setMode(next) {
-  mode = next;
+function flushSave() { clearTimeout(saveTimer); saveTimer = undefined; try { fs.writeFileSync(settingsFile(), JSON.stringify({ ...anchor, scale })); } catch {} }
+function save() { clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 250); }
+function layout() {
   const area = screen.getDisplayNearestPoint(anchor).workArea;
+  const bounds = fitBounds(anchor, scaledSize(mode, scale), area);
   win.setIgnoreMouseEvents(false);
-  win.setBounds(fitBounds(anchor, SIZES[mode], area));
+  win.setBounds(bounds);
+  anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+}
+function setMode(next) {
+  if (!Object.hasOwn(SIZES, next) || mode === next) return;
+  mode = next;
+  if (mode === 'dot') { if (dragging || resizing) save(); dragging = resizing = undefined; }
+  layout();
   win.webContents.send('mode', mode);
 }
-function toggle() { setMode(mode === 'dot' ? selectPose() : 'dot'); }
+function setScale(next) { scale = clampScale(next); layout(); win.webContents.send('scale', scale); save(); }
+function resize(step) { if (step === -1 || step === 1) setScale(Math.round((scale + step * .1) * 100) / 100); }
+function collapse() { manuallyCollapsed = true; setMode('dot'); }
+function toggle() { if (mode === 'dot') { manuallyCollapsed = false; setMode(selectPose()); } else collapse(); }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (win) { win.show(); win.focus(); } });
   app.whenReady().then(async () => {
     const area = screen.getPrimaryDisplay().workArea;
     anchor = { x: area.x + area.width - 24, y: area.y + area.height - 24 };
-    if (!smoke) { try { const p = JSON.parse(fs.readFileSync(settingsFile())); if (Number.isFinite(p.x) && Number.isFinite(p.y)) anchor = p; } catch {} }
-    win = new BrowserWindow({ ...fitBounds(anchor, SIZES[mode], screen.getDisplayNearestPoint(anchor).workArea),
+    if (!smoke) { try { const p = JSON.parse(fs.readFileSync(settingsFile())); if (Number.isFinite(p.x) && Number.isFinite(p.y)) anchor = { x: p.x, y: p.y }; scale = clampScale(p.scale); } catch {} }
+    win = new BrowserWindow({ ...fitBounds(anchor, scaledSize(mode, scale), screen.getDisplayNearestPoint(anchor).workArea),
       frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, resizable: false,
       maximizable: false, fullscreenable: false, show: false, hasShadow: false,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, offscreen:smoke, backgroundThrottling:!smoke } });
@@ -40,14 +51,18 @@ else {
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', e => e.preventDefault());
     ipcMain.handle('initial-mode', () => mode);
+    ipcMain.handle('initial-scale', () => scale);
     ipcMain.on('toggle', toggle);
     ipcMain.on('activate', (_event, pose) => {
+      if (manuallyCollapsed) return;
       if(['sit','lie'].includes(pose)&&mode!==pose)setMode(pose);
-      else if(mode==='dot')setMode('lie');
+      else if(pose===undefined&&mode==='dot')setMode('lie');
     });
-    ipcMain.on('collapse', () => setMode('dot'));
-    ipcMain.on('pointer', (_e, hit) => { if (!dragging) win.setIgnoreMouseEvents(!hit, { forward: true }); });
-    ipcMain.on('drag-start', () => { dragging = { cursor: screen.getCursorScreenPoint(), bounds: win.getBounds() }; });
+    ipcMain.on('collapse', collapse);
+    ipcMain.on('resize', (_event, step) => resize(step));
+    ipcMain.on('reset-size', () => setScale(1));
+    ipcMain.on('pointer', (_e, hit) => { if (!dragging && !resizing && typeof hit === 'boolean') win.setIgnoreMouseEvents(!hit, { forward: true }); });
+    ipcMain.on('drag-start', () => { resizing = undefined; dragging = { cursor: screen.getCursorScreenPoint(), bounds: win.getBounds() }; win.setIgnoreMouseEvents(false); });
     ipcMain.on('drag-move', () => {
       if (!dragging) return;
       const p = screen.getCursorScreenPoint(), b = dragging.bounds;
@@ -55,14 +70,34 @@ else {
       const bounds = fitBounds(target, [b.width, b.height], screen.getDisplayNearestPoint(p).workArea);
       win.setBounds(bounds); anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
     });
-    ipcMain.on('drag-end', () => { dragging = undefined; save(); });
+    ipcMain.on('drag-end', () => { if (dragging) { dragging = undefined; save(); } });
+    ipcMain.on('resize-start', (_event, corner = 'se') => {
+      if (mode === 'dot' || !Object.hasOwn(RESIZE_CORNERS, corner)) return;
+      dragging = undefined;
+      resizing = { cursor: screen.getCursorScreenPoint(), bounds: win.getBounds(), scale, corner };
+      win.setIgnoreMouseEvents(false);
+    });
+    ipcMain.on('resize-move', () => {
+      if (!resizing) return;
+      const point = screen.getCursorScreenPoint(), start = resizing;
+      const result = resizeFromCorner(mode, start, point.x - start.cursor.x, point.y - start.cursor.y, screen.getDisplayNearestPoint(point).workArea);
+      const bounds = result.bounds;
+      scale = result.scale;
+      win.setBounds(bounds); anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+      win.webContents.send('scale', scale);
+    });
+    ipcMain.on('resize-end', () => { if (resizing) { resizing = undefined; save(); } });
+    win.on('close', () => { if (saveTimer || dragging || resizing) flushSave(); });
     const pixels = Buffer.alloc(16 * 16 * 4);
     for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) { const i = (y * 16 + x) * 4; pixels[i] = 232; pixels[i+1] = 173; pixels[i+2] = 168; pixels[i+3] = Math.hypot(x-7.5,y-7.5) < 6 ? 255 : 0; }
     tray = new Tray(nativeImage.createFromBitmap(pixels, { width: 16, height: 16 }));
     tray.setToolTip('VoiceMem 雾铃');
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: '展开 / 收起', click: toggle }, { label: '找回小点', click: () => { anchor = { x: area.x+area.width-24,y:area.y+area.height-24 }; setMode('dot'); win.show(); save(); } }, { type: 'separator' }, { label: '退出', click: () => app.quit() }]));
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: '展开 / 收起', click: toggle },
+      { label: '缩小', click: () => resize(-1) }, { label: '放大', click: () => resize(1) }, { label: '恢复原始大小', click: () => setScale(1) },
+      { label: '找回小点', click: () => { anchor = { x: area.x+area.width-24,y:area.y+area.height-24 }; collapse(); layout(); win.show(); save(); } },
+      { type: 'separator' }, { label: '退出', click: () => app.quit() }]));
     tray.on('click', toggle);
-    screen.on('display-removed', () => setMode(mode));
+    screen.on('display-removed', () => { layout(); save(); });
     const query = new URLSearchParams();
     if (link) query.set('ws', link);
     if (argOf('idle')) query.set('idle', argOf('idle'));   // --idle=4 放大待机幅度

@@ -190,9 +190,17 @@ not Docker or settings APIs; IPC validates the pet's exact main frame and docume
 The pet session permits only bundled resources and the selected `/ws-pet` endpoint,
 denies device permissions, and does not start a conversation. Service changes close
 the old observer before opening the new one; closing the Studio window closes the
-pet. Position lives in desktop app data. Native users can disable the backend's
+pet. Position and a 40–150% expanded-window scale live in desktop app data; older
+position-only files default to 100%. The shared renderer has no toolbar: dragging
+any of its four corners resizes around the opposite corner, and dragging the
+character or scene moves the window. Window controllers constrain bounds to
+the display work area and resize without restarting the avatar pose. The dot
+keeps its fixed size, and manual collapse suppresses observer-triggered expansion
+until the user explicitly reopens it. Opening or focusing Studio leaves pet
+placement under user control. The standalone controller provides the same controls
+with its own saved position and scale. Native users can disable the backend's
 automatic pet with the existing `STUDIO_DESKTOP_PET=0` to avoid duplicate windows;
-containers already do this. The standalone pet and Web playback contracts remain unchanged.
+containers already do this. The standalone launch and Web playback contracts remain unchanged.
 
 Original `web/run.py`
 and moved provider modules remain thin compatibility entry points; executable

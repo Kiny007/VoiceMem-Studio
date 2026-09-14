@@ -188,6 +188,11 @@ function installMenu() {
         if (petEnabled) void showPet(); else pet?.close();
       } },
       { label: '找回桌宠位置', click: () => pet?.resetPosition() },
+      { label: '桌宠大小', submenu: [
+        { label: '缩小', click: () => pet?.resize(-1) },
+        { label: '放大', click: () => pet?.resize(1) },
+        { label: '恢复原始大小', click: () => pet?.resetSize() },
+      ] },
       { type: 'separator' }, { role: 'quit', label: '退出' },
     ] },
     { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

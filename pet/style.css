@@ -4,7 +4,13 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent
 [hidden]{display:none!important}
 #dot{position:absolute;width:26px;height:26px;right:13px;bottom:13px;border:1px solid #e5cef8;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff2ff,#bc94df 45%,#695487);box-shadow:0 0 10px #caa2f46b}
 #dot:hover{filter:brightness(1.15)}
-#character{position:absolute;inset:8px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
+#character{position:absolute;inset:8px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;cursor:grab;touch-action:none}
+#character:active{cursor:grabbing}
+.resize-corner{position:absolute;z-index:6;width:32px;height:32px;touch-action:none}
+[data-resize-corner="nw"]{left:-8px;top:-8px;cursor:nwse-resize}
+[data-resize-corner="ne"]{right:-8px;top:-8px;cursor:nesw-resize}
+[data-resize-corner="sw"]{left:-8px;bottom:-8px;cursor:nesw-resize}
+[data-resize-corner="se"]{right:-8px;bottom:-8px;cursor:nwse-resize}
 #stage{position:relative;width:100%;flex:1;min-height:0;overflow:hidden;border:1px solid #d7eef5cc;border-radius:18px;background:#dceef4;box-shadow:0 10px 34px #173b5260,inset 0 0 0 1px #fff8}
 #scene,#scene-plate,.curtain,#leaves,#scene-light,#live{position:absolute;inset:0;width:100%;height:100%}
 #scene{overflow:hidden;pointer-events:none}
