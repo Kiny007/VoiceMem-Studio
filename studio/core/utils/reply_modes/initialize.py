@@ -7,4 +7,11 @@ from .component import FAST, MEDIUM, SLOW, THINKING_LEVELS, QwenThinkingRouter, 
 @lru_cache(maxsize=1)
 def thinking_router():
     """Return the process router with fixed local model selection."""
+    backend = os.environ.get('STUDIO_ROUTER_BACKEND') or (
+        'mlx' if os.environ.get('STUDIO_BACKEND') == 'mlx' else 'torch')
+    if backend == 'mlx':
+        from .mlx import MLXThinkingRouter
+        return MLXThinkingRouter()
+    if backend != 'torch':
+        raise ValueError('STUDIO_ROUTER_BACKEND must be mlx or torch')
     return QwenThinkingRouter(device=os.environ.get('STUDIO_DEVICE') or None)

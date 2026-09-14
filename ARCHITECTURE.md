@@ -499,7 +499,12 @@ The model receives current text plus up to four context messages sharing the
 existing 320-character history budget. It answers only whether deep reasoning
 is needed and does not receive memory-prefetch hints. Studio-specific topic,
 date and greeting regex shortcuts are not used. Inference remains off-loop
-under the process Torch lock. Depth decisions are cached by text and bounded
+on the shared `GpuLoop` for the MLX backend, using the same local Qwen weights
+quantized to 8 bits at load time. Its immutable KV prefix includes only the
+system prompt and examples; every request receives a separate cache copy after
+verifying the token prefix. CUDA and explicit `STUDIO_ROUTER_BACKEND=torch`
+retain the Torch path under the process Torch lock. Depth decisions are cached
+by text and bounded
 context, independent of the Gate; changing memory eligibility recomposes the
 final route without rerunning depth. Invalid model output uses ordinary reasoning;
 model exceptions preserve Gate memory eligibility. The legacy class name and
@@ -600,8 +605,8 @@ do not become normal assistant replies.
 
 ### MLX
 
-Local MLX reply and TTS work share one process-level `GpuLoop`. The loop owns the
-GPU execution thread and advances active generators in weighted turns.
+Local MLX reply, reasoning-depth routing, and TTS work share one process-level
+`GpuLoop`. The loop owns the GPU execution thread and advances active generators in weighted turns.
 
 Some speech jobs receive temporary first-chunk priority; afterward they rejoin
 weighted scheduling. Cancellation closes the generator and removes it from the

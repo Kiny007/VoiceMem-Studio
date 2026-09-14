@@ -178,7 +178,7 @@ def _banks(lang: str):
     import numpy as np
     from voicemem.leftbrain.local_embedder import resolve, resolve_path, shared_model
     spec = resolve(language=lang)
-    m = shared_model(resolve_path(spec))
+    m = shared_model(resolve_path(spec), spec.tokenizer_kwargs)
     deep, shallow = _PROTO.get(lang) or _PROTO["en"]
     enc = lambda xs: np.asarray(
         m.encode([f"{spec.passage_prefix}{x}" for x in xs], normalize_embeddings=True))

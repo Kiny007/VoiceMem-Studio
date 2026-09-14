@@ -24,6 +24,8 @@ class ConsoleTests(unittest.TestCase):
         console, logfile = io.StringIO(), io.StringIO()
         tee = _Tee(console, logfile, "stdout", threading.RLock(), concise=True)
         for piece in ("[asr] verbose\n", "[status] 正在初始化\n",
+                      "[start", "up] emotion2vec 已预热\n",
+                      "[startup] VoiceMem Studio 启动成功：http://localhost:8787\n",
                       "[tts-prompt] ", '认真 "语速平稳"', "\n",
                       "[lat] 闭嘴→首帧 900ms｜后续中位 888ms\n",
                       "INFO: GET /api/memories 200 OK\n", "[web] 合成失败：test\n"):
@@ -33,6 +35,8 @@ class ConsoleTests(unittest.TestCase):
         self.assertNotIn("中位", console.getvalue())
         self.assertIn("[tts-prompt] 认真", console.getvalue())
         self.assertIn("[status] 正在初始化", console.getvalue())
+        self.assertIn("[startup] emotion2vec 已预热", console.getvalue())
+        self.assertIn("启动成功：http://localhost:8787", console.getvalue())
         self.assertIn("900ms", console.getvalue())
         self.assertIn("失败", console.getvalue())
         self.assertIn("verbose", logfile.getvalue())
