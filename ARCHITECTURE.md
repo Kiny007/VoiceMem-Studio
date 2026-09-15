@@ -345,6 +345,19 @@ Capture batches target short, regular PCM frames. Capture and playback share a
 sample-clock relationship so latency and echo logic can use explicit media
 positions rather than wall-clock guesses.
 
+The browser owns one live connection attempt and its microphone resources.
+Startup is registered before opening the WebSocket; another start-button click
+cancels that attempt instead of creating a second capture. Every asynchronous
+startup continuation checks its owner, and late permission results have their
+tracks stopped. End/disconnect/page exit invalidates ownership before removing
+node callbacks, disconnecting the capture and playback-reference edges, stopping
+tracks and closing the owned socket. PCM callbacks use the socket and sample
+clock captured by their own attempt, never a later connection. AudioWorklet
+module loading may be shared for one audio context, but capture nodes are not.
+The ScriptProcessor fallback follows the same cleanup and ownership rules.
+Old socket events and cancelled startup-memory responses cannot affect the new
+session. This is a per-page guard, not a cross-client or server-wide session limit.
+
 ### ASR and final refinement
 
 Streaming ASR runs in a dedicated serial worker so chunk inference does not
