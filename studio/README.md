@@ -153,18 +153,26 @@ Install the matching extra in its own environment; do not combine both extras.
 | 任意 | 是 | mem+cot |
 
 记忆资格沿用 `voicemem/gate.py` 原有判断，复用已经完成的检索或补齐缺失检索。
-小模型只根据当前发言和最近 4 条消息（共 320 字符）回答“是否需要深思”，提示在
+路由阶段，小模型只根据当前发言和最近 4 条消息（共 320 字符）回答“是否需要深思”，提示在
 `harness/reply_modes/policy.py`。Studio 不再额外按日期、问句或关键词硬编码路由。
 普通推理或小模型调用失败都不会否决 Gate 已批准的记忆；陌生人声纹仍不能访问主人记忆。
 原 Gate 和小模型都可能误判，但记忆与推理各自负责自己的部分，不再重复筛掉记忆。
 
-mem+cot 在正文音频尚未就绪时使用原有长垫话流程，不再被最近闲聊较快的耗时估计挡住。
+mem+cot 在正文音频尚未就绪时，按 **30% 概率**尝试长垫话。每个确认回合只抽一次；
+实际发出后，按音频时长再加 **20 秒冷却**限制下一次，未命中不补其他附和。
+文字复用已加载的 Qwen3-0.6B 生成，不再调用正文 API；带当前全文和最近两条各最多
+80 字符的上下文，关闭 thinking，最多生成 40 tokens。排队加生成超过 **1.2 秒**、
+权重未加载、输出格式不合格或失败时直接跳过，不拖住正文。
+概率、冷却、超时及提示词统一在 `harness/turn_taking/policy.py` 的
+`WORK_FILLER_PROBABILITY`、`WORK_FILLER_COOLDOWN_S`、`WORK_FILLER_TIMEOUT_S`、
+`FILLER_PROMPT` / `FILLER_INPUT_PROMPT` 配置，修改后重启生效。
+概率为 0 可关闭长垫话，为 1 仍受冷却及正文就绪控制。
 正文和垫话继续并行生成；正文先准备好就跳过垫话，垫话已经播放则等待它结束再放行正文。
 这不改变讲话途中的附和、未完句续话计时、TTS 切句或提前生成。
 选择 mem 不代表一定能查到日程：记忆库必须已有相关记录，没有记录时不能编造。
 
 ```bash
-python -m unittest evals.test_thinking_router evals.test_dialogue_harness.TurnTakingTimingTests
+python -m unittest evals.test_work_filler evals.test_thinking_router evals.test_dialogue_harness.TurnTakingTimingTests
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m evals.router_quality --device cuda:0 --assert-quality
 ```
 

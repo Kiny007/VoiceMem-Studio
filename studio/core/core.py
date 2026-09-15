@@ -16,6 +16,7 @@ async def converse(agent, socket):
                     continue
                 pending = await session.merge_continuation(pending)
                 session.stop_prewarm()
+                await session.publish_user_input(pending)
                 if pending.spoken and needs_continuation(pending.text):
                     await session.drop_early('等待用户补完半句')
                     await session.defer_unfinished_reply(pending)

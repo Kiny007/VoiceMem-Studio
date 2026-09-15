@@ -20,7 +20,9 @@ class RealtimeSession:
     async def start_realtime_turn(self, pending, conn, send, timeline,
                                   context_session="", context_space=""):
         """Send the confirmed turn context and start realtime generation."""
-        await send({"type": "user_transcript", "text": pending.text})
+        if not getattr(pending, "transcript_managed", False):
+            from studio.core.utils.contracts.component import input_transcript_event
+            await send(input_transcript_event(pending))
         if gate.needs_memory(pending.route):
             self.note_hits(pending.result)
 

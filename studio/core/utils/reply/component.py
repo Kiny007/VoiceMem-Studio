@@ -101,7 +101,9 @@ class Reply:
         memory_vm = memory_vm or self.vm
         context_space = context_space or self.ACTIVE_SPACE
         _entry = time.monotonic()
-        await send({"type": "user_transcript", "text": pending.text})
+        if not getattr(pending, "transcript_managed", False):
+            from studio.core.utils.contracts.component import input_transcript_event
+            await send(input_transcript_event(pending))
 
         if pending.replay:
             self._note_replay(pending.replay)

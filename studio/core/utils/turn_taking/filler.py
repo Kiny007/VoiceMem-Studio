@@ -1,8 +1,9 @@
 """Reusable timing primitives for short acknowledgements and work fillers."""
 from __future__ import annotations
-from studio.harness.turn_taking.policy import FILLER_PROMPT
+from studio.harness.turn_taking.policy import FILLER_INPUT_PROMPT, FILLER_PROMPT, WORK_FILLER_TIMEOUT_S
 
 import asyncio
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -37,6 +38,39 @@ def generation_prompt(task_context: str, lang: str = "zh") -> str:
     """Build an LLM prompt for a spoken filler, not the final answer."""
     context = (task_context or "").strip()
     return FILLER_PROMPT.format(task_context=context)
+
+
+async def generate_local_filler(task_context: str, *, history: Sequence[dict] = (),
+                                lang: str = "zh", router=None) -> str:
+    """Generate one optional bridge with the warmed router, never the reply API."""
+    if not task_context.strip():
+        return ""
+    if router is None:
+        from studio.core.utils.reply_modes.initialize import thinking_router
+        router = thinking_router()
+    context = []
+    for message in list(history)[-2:]:
+        role = {'user': '用户', 'assistant': '助手'}.get(message.get('role'))
+        if role:
+            content = ' '.join(str(message.get('content') or '').split())[:80]
+            context.append(f'{role}：{content}')
+    language = '英语' if lang == 'en' else '中文'
+    prompt = FILLER_INPUT_PROMPT.format(
+        language=language, history='\n'.join(context), task_context=task_context.strip())
+    started = time.monotonic()
+    text = await router.generate_short_text_async(
+        generation_prompt('', lang), prompt, max_tokens=40,
+        timeout_s=WORK_FILLER_TIMEOUT_S)
+    from voicemem import tts_control
+    tag, spoken = tts_control.split(text)
+    text = (spoken if tag else text).strip().strip('“”\"')
+    limit = 100 if lang == 'en' else 36
+    # Reject malformed speech; semantic appropriateness still depends on the model.
+    if not 4 <= len(text) <= limit or any(char in text for char in '<>|\n?？“”\"'):
+        text = ''
+    print(f'[filler] local-0.6b {"ready" if text else "skipped"} '
+          f'{(time.monotonic() - started) * 1000:.0f}ms', flush=True)
+    return text
 
 async def generate_filler(
     reply_stream: Callable[[str, str, Sequence[dict]], AsyncIterator[str]],

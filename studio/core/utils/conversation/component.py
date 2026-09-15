@@ -8,7 +8,8 @@ import uuid
 from dataclasses import replace
 from studio.core.utils.dialogue.component import CONTROLS, backchannel_policy, is_unfinished
 from studio.core.utils.reply_modes.initialize import DIRECT, MEMORY
-from studio.core.utils.turn_taking.initialize import Backchannel, HandoffKind, TurnTakingStateMachine, generate_filler, wait_for_filler_and_output
+from studio.core.utils.turn_taking.initialize import Backchannel, HandoffKind, TurnTakingStateMachine, wait_for_filler_and_output
+from studio.core.utils.turn_taking.filler import generate_local_filler
 from studio.core.utils.audio_timeline.component import AudioTimeline, SpeechRateEstimator
 from studio.core.utils.tts.audio_timing import TimedAudioChunk
 from voicemem import gate
@@ -21,9 +22,16 @@ class Conversation:
     def __init__(self, agent, sock):
         initialize(self, agent, sock)
 
+    async def publish_user_input(self, pending) -> None:
+        """Publish accepted input independently of reply/audio cancellation."""
+        from studio.core.utils.contracts.component import input_transcript_event
+        await self.sock.send_json(input_transcript_event(pending))
+        pending.transcript_managed = True
+
     def filler_done(self, filler_id: str) -> None:
         event = self.filler_waiters.get(filler_id)
-        if event is not None:
+        if event is not None and not event.is_set():
+            self.turn_taking.record_work_filler(0.0)
             event.set()
 
     async def pause_candidate(self):
@@ -144,6 +152,8 @@ class Conversation:
         if filler_id:
             message['filler_id'] = filler_id
         await self.sock.send_json(message)
+        if filler_id:
+            self.turn_taking.record_work_filler(duration)
         self.turn_taking.record_emission(token, committed=True)
         self.turn['until'] = max(self.turn['until'], time.monotonic() + duration)
         self.turn['echo_until'] = max(self.turn['echo_until'], self.turn['until'] + 2.0)
@@ -162,9 +172,9 @@ class Conversation:
             self.filler_waiters.pop(filler_id, None)
 
     async def synthesize_work_filler(self, pending, memory_vm, context_space):
-        """Generate and synthesize a bridge without delaying the main work."""
+        """Generate a bounded local bridge; speech uses the existing shared TTS."""
         history = self.agent._SESSION_CONTEXT.messages(self.context_session, context_space, window=self.agent.HISTORY_TURNS)
-        text = await generate_filler(memory_vm.reply_stream, pending.text, history=history, lang=self.agent.space_language(context_space))
+        text = await generate_local_filler(pending.text, history=history, lang=self.agent.space_language(context_space))
         if not text:
             return ('', b'')
         tts = memory_vm.utils.get('tts')
@@ -175,8 +185,13 @@ class Conversation:
         except TypeError:
             stream = tts.stream(text)
         chunks = bytearray()
-        async for chunk in stream:
-            chunks.extend(chunk.pcm if isinstance(chunk, TimedAudioChunk) else chunk)
+        try:
+            async for chunk in stream:
+                chunks.extend(chunk.pcm if isinstance(chunk, TimedAudioChunk) else chunk)
+        finally:
+            close = getattr(stream, 'aclose', None)
+            if close is not None:
+                await close()
         return (text, bytes(chunks))
 
     async def release_buffered_reply(self, sink, decision, ack, pending, memory_vm, context_space) -> None:
@@ -255,7 +270,7 @@ class Conversation:
         async def run():
             try:
                 committed_text = (await refined_text).strip() or text
-                pending = Pending(committed_text, build_memory_context(result), result, spoken=True, emotion=emotion, route=route, reply_mode=MEMORY if gate.needs_memory(route) else DIRECT)
+                pending = Pending(committed_text, build_memory_context(result), result, spoken=True, emotion=emotion, route=route, reply_mode=MEMORY if gate.needs_memory(route) else DIRECT, transcript_managed=True)
                 await self.agent.route_pending_thinking(pending, memory_vm, history=routing_history)
                 self.early['text'] = committed_text
                 self.early['pending'] = pending
@@ -396,7 +411,9 @@ class Conversation:
             if self.unfinished_wait.get('space') != self.agent.ACTIVE_SPACE or self.unfinished_wait.get('memory_vm') is not self.agent.vm:
                 return pending
             joiner = '' if self.agent.space_language(self.agent.ACTIVE_SPACE) == 'zh' else ' '
-            pending = replace(pending, text=f'{base.text}{joiner}{pending.text}'.strip(), continuation_prompt=False, early_ok=False)
+            pending = replace(pending, text=f'{base.text}{joiner}{pending.text}'.strip(), continuation_prompt=False, early_ok=False,
+                              replace_input_turn_id=getattr(base, 'input_turn_id', ''),
+                              transcript_managed=False)
             if self.agent.BARGE_DEBUG:
                 print(f'[unfinished] 用户续说，合并为 {pending.text!r}', flush=True)
         return pending

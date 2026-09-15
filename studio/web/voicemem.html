@@ -1584,6 +1584,42 @@ function addOrMergeUserTurn(s,text,speaker){
   addTurn(s,'user',text,speaker);
   s.turns[s.turns.length-1].mergeUntil=now+2500;
 }
+function applyInputTranscript(s,m,final=false,backchannel=false){
+  const id=typeof m.input_turn_id==='string'?m.input_turn_id:'';
+  if(!id){
+    // Older backends retain their untagged display and continuation behavior.
+    s.ui.input=m.text;
+    if(final){
+      if(backchannel) addTurn(s,'user',m.text,s.ui.speaker||'你');
+      else addOrMergeUserTurn(s,m.text,s.ui.speaker||'你');
+    }
+    return true;
+  }
+  const state=s.inputTranscripts||(s.inputTranscripts={current:'',turns:new Map()});
+  let entry=state.turns.get(id);
+  if(entry&&(entry.final||(!final&&state.current!==id))) return false;
+  if(!entry){
+    entry={final:false,turn:null};
+    state.turns.set(id,entry);
+    state.current=id;
+  }
+  if(final){
+    const previous=state.turns.get(m.replace_input_turn_id);
+    entry.turn=entry.turn||(previous&&previous.turn);
+    if(previous&&previous!==entry) previous.final=true;
+    if(entry.turn){
+      entry.turn.text=m.text;
+      renderSessions(); if(s===currentSession()) renderChat();
+    }else{
+      addTurn(s,'user',m.text,s.ui.speaker||'你');
+      entry.turn=s.turns[s.turns.length-1];
+    }
+    entry.final=true;
+  }
+  if(state.current!==id) return false;
+  s.ui.input=m.text;
+  return true;
+}
 function paint(s){ if(s===currentSession()) renderIO(s); }
 function applyHits(s,sp,ex){
   const L=(ex.left||[]).map((i,k)=>({m:sp.left[i],score:(0.88-k*0.09).toFixed(2)})).filter(x=>x.m);
@@ -2234,20 +2270,21 @@ function handle(m){
       toast(i18n('connected', m.mode||'')); break;
 
     case 'partial_transcript':
+      if(!applyInputTranscript(s,m)) break;
       if(m.text && !m.non_interrupting) setVoice('user');
-      s.ui.input=m.text; paint(s); break;
+      paint(s); break;
 
     case 'user_backchannel':
       // Acknowledgement while listening: display without resetting reply state.
-      s.ui.input=m.text; paint(s);
-      addTurn(s,'user',m.text,s.ui.speaker||'你'); break;
+      if(applyInputTranscript(s,m,true,true)) paint(s);
+      break;
 
     case 'user_transcript':
+      if(!applyInputTranscript(s,m,true)) break;
       // 新的一轮：先把上一轮的标签清掉。这一轮抽出什么，等 ingest 完了再填。
       // 不清的话，说一句抽不出东西的话（「啦啦啦」），标签栏还挂着上一句的实体。
       s.ui.tags={emo:'',ent:'',sch:''};
-      lvOn=false; s.ui.input=m.text; paint(s);
-      addOrMergeUserTurn(s,m.text,s.ui.speaker||'你'); break;
+      lvOn=false; paint(s); break;
 
     case 'memory_hits': {
       // 展示可能晚于首音频；旧回合的后台结果不能覆盖新回合。

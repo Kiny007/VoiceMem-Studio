@@ -315,6 +315,13 @@ profile and eval workflow are standardized on Python 3.12.
 
 Shared code consumes these meanings rather than provider-native objects.
 
+Input display messages use an opaque `input_turn_id`, distinct from assistant
+`output_id` and persistent history IDs. Capture retains it across partials and
+the accepted input, then rotates it for the next turn. An explicit continuation
+merge includes `replace_input_turn_id` so the UI updates the original user bubble
+instead of guessing from elapsed time. Untagged events retain legacy display
+behavior. These identifiers carry no memory-write or interruption authority.
+
 ## 6. Input and turn flow
 
 ```mermaid
@@ -432,9 +439,13 @@ flowchart LR
 EOT can provide enough confidence to start reply work before final turn
 confirmation. This is a latency optimization, not a change to turn semantics.
 
-`ReplySink` initially buffers JSON events and PCM in one ordered private
-timeline. Nothing reaches the browser until final ASR and turn confirmation
-show that the speculative input still covers the final utterance.
+`ReplySink` initially buffers reply JSON events and PCM in one ordered private
+timeline. Speculative replies remain private until final ASR and turn confirmation
+show that the speculative input still covers the final utterance. Accepted user
+transcripts are published separately by the conversation loop after input filters
+and continuation merging, before routing or reply handoff. Cancelling a reply
+cannot discard that user's display record. This publication never writes Session
+Context or memory; their existing reply-finalization paths retain ownership.
 
 ```text
 high EOT score
@@ -459,8 +470,11 @@ commit cancels the buffered work before any transcript or audio is sent. Once EO
 commits the turn, the final ASR transcript becomes authoritative without requiring
 an exact match to the earlier streaming hypothesis. Minor ASR repairs and spoken
 fillers keep the fast path; material continuation after the frozen EOT text
-cancels the stale reply and starts one reply from the complete turn. `ReplySink`
-replaces its buffered user-transcript event with that final text. Generated speech
+cancels the stale reply and starts one reply from the complete turn. Conversation-
+managed reply jobs do not emit user transcripts, including EOT snapshots. The
+legacy `ReplySink` transcript replacement remains available for direct callers.
+The UI finalizes user records by input ID and ignores later partials or duplicate
+finals for those records; a real new input remains free to update live text. Generated speech
 stays buffered until turn confirmation becomes the commit point for playback.
 
 Clearly unfinished voice turns have a separate continuation path. The Studio session
@@ -502,15 +516,29 @@ A route change between an early snapshot and final ASR invalidates buffered earl
 One session-scoped `TurnTakingStateMachine` then chooses the handoff. Ready
 audio is released directly. An ordinary predicted wait may use a cached
 acknowledgement, while `memory_cot` may request an LLM-generated work filler
-whenever main audio is not ready. Recent fast smalltalk cannot suppress this
-first slow-turn opportunity. Existing readiness races still cancel unplayed
-fillers if the main reply wins; the route does not guarantee a spoken filler.
+when main audio is not ready. The harness configures its probability and
+session cooldown separately from in-speech acknowledgements. A confirmed input
+gets at most one random draw, retained across handoff retries; speculative EOT
+work does not draw. A sent work filler reserves its clip duration plus cooldown;
+an acknowledged playback completion extends that deadline when playback started late.
+Skipped work fillers do not fall back to a cached acknowledgement. Existing
+readiness races still cancel unplayed fillers if the main reply wins; the route
+does not guarantee a spoken filler.
 First audio observations update the session estimate used by later
 decisions. Main reply work runs into a `ReplySink` while either filler plays.
 For every emitted end-of-turn filler, the browser reports actual playback
 completion before that sink releases `answer_start` or main PCM. Generation
 remains concurrent, but spoken filler and main audio never overlap or hard-cut
 each other.
+
+Work-filler wording comes from the already-loaded Qwen3-0.6B weights, not the
+main reply API. It uses a separate non-thinking short-generation prompt, the
+complete current input and at most two bounded history messages, without
+changing depth classification or retrieving additional memory. Cold weights,
+over-budget output, invalid text, failure or a queue-inclusive generation timeout
+skip the optional bridge. Token budget and cancellation limit background work;
+native inference already in progress cannot be forcibly interrupted. The
+legacy reply-stream filler helper remains available to direct callers.
 
 ## 9. Reply, prompt, and speech flow
 
@@ -645,6 +673,9 @@ Some speech jobs receive temporary first-chunk priority; afterward they rejoin
 weighted scheduling. Cancellation closes the generator and removes it from the
 active set. Creating an independent MLX thread or stream bypasses this safety
 and scheduling model.
+Auxiliary Qwen work fillers run as non-exclusive token-stepped jobs on this
+same scheduler. Each has a private KV cache and leaves the classifier's static
+prefix cache untouched.
 
 ### CUDA
 
@@ -672,6 +703,10 @@ DeepSeek-only deployments require only DeepSeek credentials.
 Torch-backed embedding and related MPS operations use the process-level lock in
 `utils/torch_lock.py`. Lock scope covers device inference, not unrelated search
 coordination or waits on work that may need the same lock.
+The optional local work-filler decoder also reuses this lock, releasing it
+between forward passes so a whole sentence does not monopolize ASR/router
+access. Each request owns its KV cache and checks cancellation and deadline
+before each step and while acquiring the lock.
 
 ### Hot-path priority
 

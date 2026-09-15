@@ -89,11 +89,21 @@ def inspect(args):
         from studio.harness.persona.policy import SYSTEM_PROMPT
         from studio.harness.speaking_style.policy import PROMPT
         from studio.harness.reply_modes.policy import SYSTEM
-        from studio.harness.turn_taking.policy import CONTROLS, FILLER_PROMPT
-        if not all(isinstance(text, str) and text.strip() for text in (SYSTEM_PROMPT, PROMPT, SYSTEM, FILLER_PROMPT)):
+        from studio.harness.turn_taking.policy import (
+            CONTROLS, FILLER_PROMPT, FILLER_INPUT_PROMPT, WORK_FILLER_PROBABILITY,
+            WORK_FILLER_COOLDOWN_S, WORK_FILLER_TIMEOUT_S)
+        if not all(isinstance(text, str) and text.strip() for text in (SYSTEM_PROMPT, PROMPT, SYSTEM, FILLER_PROMPT, FILLER_INPUT_PROMPT)):
             raise ValueError('empty prompt')
         if CONTROLS['unfinished_followup_s'] <= 0:
             raise ValueError('unfinished_followup_s must be positive')
+        FILLER_PROMPT.format(task_context='')
+        FILLER_INPUT_PROMPT.format(language='中文', history='', task_context='')
+        if not 0 <= WORK_FILLER_PROBABILITY <= 1:
+            raise ValueError('WORK_FILLER_PROBABILITY must be between zero and one')
+        if not 0 <= WORK_FILLER_COOLDOWN_S < float('inf'):
+            raise ValueError('WORK_FILLER_COOLDOWN_S must be finite and nonnegative')
+        if not 0 < WORK_FILLER_TIMEOUT_S < float('inf'):
+            raise ValueError('WORK_FILLER_TIMEOUT_S must be finite and positive')
     except Exception as exc:
         errors.append(f'Prompt/控制配置无效：{type(exc).__name__}: {exc}')
     for model in models(args):
