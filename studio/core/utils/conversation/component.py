@@ -73,8 +73,14 @@ class Conversation:
         if timeline.playback_done:
             self.turn['until'] = 0.0
 
-    async def send_audio(self, pcm: bytes):
+    async def send_audio(self, pcm: bytes, timeline=None):
         """Send PCM and update the output duration and first-audio observation."""
+        timeline = timeline or self.turn['timeline']
+        if timeline is not self.turn['timeline'] or (timeline and timeline.interrupted):
+            return
+        await self.sock.send_bytes(pcm)
+        if timeline and timeline.track_delivery:
+            timeline.mark_sent(len(pcm) // 2)
         self.turn['until'] = max(self.turn['until'], time.monotonic()) + len(pcm) / 2 / self.agent.MIC_RATE
         self.turn['echo_until'] = self.turn['until'] + 2.0
         if not self.turn['t0']:
@@ -82,7 +88,6 @@ class Conversation:
         if self.turn['measure_started'] and (not self.turn['measure_recorded']):
             self.turn['measure_recorded'] = True
             self.turn_taking.observe_first_audio(time.monotonic() - self.turn['measure_started'])
-        await self.sock.send_bytes(pcm)
 
     async def stop_reply(self, force: bool=False):
         continuation_task = self.turn.get('continuation_task')
@@ -97,6 +102,15 @@ class Conversation:
             return
         if not self.hearing():
             self.turn['task'] = None
+            generation_task = self.turn.get('generation_task')
+            if generation_task is not None and not generation_task.done():
+                generation_task.cancel()
+                await asyncio.gather(generation_task, return_exceptions=True)
+            timeline = self.turn['timeline']
+            if timeline and not timeline.context_saved:
+                timeline.mark_interrupted()
+                if finalize := self.turn.get('finalize'):
+                    finalize()
             return
         since = (time.monotonic() - self.turn['t0']) * 1000 if self.turn['t0'] else 0.0
         if not force and self.turn['t0'] and (since < self.agent.BARGE_GRACE_MS):
@@ -107,28 +121,72 @@ class Conversation:
             left = max(0.0, self.turn['until'] - time.monotonic()) * 1000
             print(f'[barge] ★ 打断：转写触发（前端还剩 {left:.0f}ms 没播完）', flush=True)
         task = self.turn['task']
+        generation_task = self.turn.get('generation_task')
         timeline = self.turn['timeline']
-        heard_text = timeline.heard_text() if timeline else ''
+        finalize = self.turn.get('finalize')
         output_id = timeline.output_id if timeline else ''
         if timeline:
             timeline.mark_interrupted()
+        heard_text = timeline.heard_text() if timeline else ''
         if task is not None and (not task.done()):
             task.cancel()
+        if generation_task is not None and not generation_task.done():
+            generation_task.cancel()
         (self.turn['task'], self.turn['until']) = (None, 0.0)
         self.candidate_paused = False
         self.candidate_paused_at = 0.0
         try:
-            await self.sock.send_json({'type': 'answer_interrupt', 'output_id': output_id, 'heard_text': heard_text})
-        except Exception:
-            pass
-        if task is not None and (not task.done()):
             try:
-                await task
-            except asyncio.CancelledError:
+                await self.sock.send_json({'type': 'answer_interrupt', 'output_id': output_id, 'heard_text': heard_text})
+            except Exception:
                 pass
+            if task is not None and (not task.done()):
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            if generation_task is not None:
+                await asyncio.gather(generation_task, return_exceptions=True)
+            if finalize:
+                finalize()
 
-    def reset_output_state(self, pending, timeline, reply_state) -> None:
+    def reset_output_state(self, pending, timeline, reply_state, *, memory_vm=None, context_space='') -> None:
+        memory_vm = memory_vm or self.agent.vm
+        context_space = context_space or self.agent.ACTIVE_SPACE
+        timeline.context_managed = True
         self.turn.update(t0=0.0, until=0.0, speech_end=pending.speech_end, play_started=False, reply=reply_state, timeline=timeline, measure_started=0.0, measure_recorded=False)
+        self.turn['finalize'] = lambda: self.save_reply_context(pending, timeline, memory_vm, context_space)
+        self.turn['generation_task'] = None
+
+    def save_reply_context(self, pending, timeline, memory_vm, context_space) -> None:
+        """Finalize a confirmed output once, using its final input and frozen heard prefix."""
+        if timeline.context_saved:
+            return
+        timeline.freeze_playback()
+        timeline.context_saved = True
+        reply = timeline.heard_text()
+        if timeline.interrupted and self.agent.BARGE_DEBUG:
+            print(f'[context] 打断于 {timeline.rendered_ms()}ms，保留回复 {reply!r}', flush=True)
+        history_turn_id = self.agent._push_history(
+            self.context_session, context_space, pending.text, reply,
+            interrupted=timeline.interrupted)
+        self.agent.queue_remember_turn(pending, reply, self.owner, history_turn_id,
+                                      memory_vm=memory_vm)
+
+    async def wait_reply_playback(self, pending, timeline) -> None:
+        """Wait after delivery; a missing completion report never implies heard audio."""
+        if not timeline.generation_complete or timeline.interrupted:
+            return
+        self.agent._kick_acoustic(self.sock.send_json, pending.audio_path or '')
+        if not timeline.sent_samples or timeline.playback_done:
+            return
+        timeout = max(2.0, min(60.0, timeline.sent_samples / timeline.sample_rate + 2.0))
+        try:
+            await asyncio.wait_for(timeline.wait_playback_done(), timeout=timeout)
+        except asyncio.TimeoutError:
+            print('[context] 播放结束回报超时，仅保留已确认播放的内容', flush=True)
+            timeline.freeze_playback()
 
     def cached_ack(self, pending):
         bc = self.turn_taking.backchannel
@@ -262,8 +320,9 @@ class Conversation:
         context_space = self.agent.ACTIVE_SPACE
         memory_vm = self.agent.vm
         routing_history = self.agent._SESSION_CONTEXT.messages(self.context_session, context_space, window=self.agent.HISTORY_TURNS)
-        sink = ReplySink(self.sock.send_json, self.send_audio)
-        timeline = AudioTimeline(prebuffer_seconds=0.16, rate_estimator=self.speech_rate)
+        timeline = AudioTimeline(prebuffer_seconds=0.16, rate_estimator=self.speech_rate, track_delivery=True)
+        timeline.context_managed = True
+        sink = ReplySink(self.sock.send_json, lambda pcm: self.send_audio(pcm, timeline))
         said_state = {'text': ''}
         self.early.update(text=text, sink=sink, timeline=timeline, pending=None, said=said_state, space=context_space, memory_vm=memory_vm, started=0.0)
 
@@ -327,15 +386,26 @@ class Conversation:
             continuation_task.cancel()
             await asyncio.gather(continuation_task, return_exceptions=True)
         task = self.turn['task']
-        if task is None or task.done():
-            return
-        task.cancel()
+        generation_task = self.turn.get('generation_task')
+        timeline = self.turn['timeline']
+        finalize = self.turn.get('finalize')
+        if timeline and not timeline.context_saved:
+            timeline.mark_interrupted()
         try:
-            await task
+            if generation_task is not None and not generation_task.done():
+                generation_task.cancel()
+            if task is not None and not task.done():
+                task.cancel()
+                await task
         except asyncio.CancelledError:
             pass
         except Exception as e:
             print(f'[web] 回复收尾失败：{type(e).__name__}: {e}', flush=True)
+        finally:
+            if generation_task is not None:
+                await asyncio.gather(generation_task, return_exceptions=True)
+            if finalize:
+                finalize()
 
     def reply_done(self, done_task):
         try:
@@ -359,20 +429,22 @@ class Conversation:
                 return
             pending = replace(base_pending, continuation_prompt=True, early_ok=False)
             reply_state = {'text': ''}
-            timeline = AudioTimeline(prebuffer_seconds=0.16, rate_estimator=self.speech_rate)
-            self.reset_output_state(pending, timeline, reply_state)
+            timeline = AudioTimeline(prebuffer_seconds=0.16, rate_estimator=self.speech_rate, track_delivery=True)
+            self.reset_output_state(pending, timeline, reply_state, memory_vm=memory_vm, context_space=context_space)
             self.turn['task'] = current
             self.turn['continuation_task'] = None
             self.turn['measure_started'] = time.monotonic()
             self.turn_taking.start_reply()
             started_reply = True
-            await self.agent.voicemem_llm_tts(pending, self.sock.send_json, self.send_audio, self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
-            reply = timeline.heard_text()
-            history_turn_id = self.agent._push_history(self.context_session, context_space, pending.text, reply)
-            self.agent.queue_remember_turn(pending, reply, self.owner, history_turn_id, memory_vm=memory_vm)
+            await self.agent.voicemem_llm_tts(pending, self.sock.send_json, lambda pcm: self.send_audio(pcm, timeline), self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
+            await self.wait_reply_playback(pending, timeline)
         except asyncio.CancelledError:
+            if started_reply:
+                timeline.mark_interrupted()
             raise
         finally:
+            if started_reply:
+                self.save_reply_context(pending, timeline, memory_vm, context_space)
             if self.turn['task'] is current:
                 self.turn['task'] = None
             if self.unfinished_wait['task'] is current:
@@ -450,7 +522,8 @@ class Conversation:
         memory_vm = self.early['memory_vm'] or self.agent.vm
         generation_started = self.early['started'] or time.monotonic()
         (sink, ms) = (self.early['sink'], self.early['sink'].buffered_ms)
-        self.reset_output_state(pending, timeline, reply_state)
+        self.reset_output_state(pending, timeline, reply_state, memory_vm=memory_vm, context_space=context_space)
+        self.turn['generation_task'] = early_task
         self.early.update(text='', task=None, sink=None, timeline=None, pending=None, said=None, space='', memory_vm=None, started=0.0)
         ack = self.cached_ack(pending)
         decision = self.turn_taking.decide_handoff(main_audio_ready=ms > 0, reply_mode=pending.reply_mode, cached_ack_available=bool(ack), spoken=pending.spoken)
@@ -461,12 +534,18 @@ class Conversation:
                 self.turn['measure_started'] = generation_started
                 await self.release_buffered_reply(sink, decision, ack, pending, memory_vm, context_space)
                 await early_task
+                await self.wait_reply_playback(pending, timeline)
             except asyncio.CancelledError:
+                timeline.mark_interrupted()
                 if not early_task.done():
                     early_task.cancel()
                 await asyncio.gather(early_task, return_exceptions=True)
                 raise
             finally:
+                if not early_task.done():
+                    early_task.cancel()
+                    await asyncio.gather(early_task, return_exceptions=True)
+                self.save_reply_context(pending, timeline, memory_vm, context_space)
                 self.turn_taking.finish_reply()
         task = asyncio.create_task(accept_early())
         self.turn['task'] = task
@@ -482,22 +561,11 @@ class Conversation:
         reply_state = {'text': ''}
         context_space = self.agent.ACTIVE_SPACE
         memory_vm = self.agent.vm
-        timeline = AudioTimeline(prebuffer_seconds=0.16, rate_estimator=self.speech_rate)
-        self.reset_output_state(pending, timeline, reply_state)
+        timeline = AudioTimeline(prebuffer_seconds=0.16, rate_estimator=self.speech_rate, track_delivery=True)
+        self.reset_output_state(pending, timeline, reply_state, memory_vm=memory_vm, context_space=context_space)
 
-        def save_interrupted_context() -> None:
-            if timeline.context_saved:
-                return
-            reply = timeline.heard_text()
-            history_turn_id = self.agent._push_history(self.context_session, context_space, pending.text, reply, interrupted=True)
-            self.agent.queue_remember_turn(pending, reply, self.owner, history_turn_id, memory_vm=memory_vm)
-            timeline.context_saved = True
-
-        async def run_reply(send_json=self.sock.send_json, send_pcm=self.send_audio, pending=pending, timeline=timeline, context_space=context_space, memory_vm=memory_vm, reply_state=reply_state):
-            try:
-                await self.agent.voicemem_llm_tts(pending, send_json, send_pcm, self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
-            finally:
-                save_interrupted_context()
+        async def run_reply(send_json=self.sock.send_json, send_pcm=lambda pcm: self.send_audio(pcm, timeline)):
+            await self.agent.voicemem_llm_tts(pending, send_json, send_pcm, self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
         ack = self.cached_ack(pending)
         decision = self.turn_taking.decide_handoff(main_audio_ready=False, reply_mode=pending.reply_mode, cached_ack_available=bool(ack), spoken=pending.spoken)
 
@@ -506,23 +574,27 @@ class Conversation:
             try:
                 self.turn_taking.start_handoff(decision)
                 if decision.kind is not HandoffKind.DIRECT:
-                    sink = ReplySink(self.sock.send_json, self.send_audio)
+                    sink = ReplySink(self.sock.send_json, lambda pcm: self.send_audio(pcm, timeline))
                     self.turn['measure_started'] = time.monotonic()
                     main = asyncio.create_task(run_reply(sink.send, sink.send_audio))
                     child_tasks.append(main)
                     await self.release_buffered_reply(sink, decision, ack, pending, memory_vm, context_space)
                     await main
-                    return
-                self.turn_taking.start_reply()
-                self.turn['measure_started'] = time.monotonic()
-                await run_reply()
+                else:
+                    self.turn_taking.start_reply()
+                    self.turn['measure_started'] = time.monotonic()
+                    await run_reply()
+                await self.wait_reply_playback(pending, timeline)
+            except asyncio.CancelledError:
+                timeline.mark_interrupted()
+                raise
             finally:
                 for child in child_tasks:
                     if not child.done():
                         child.cancel()
                 if child_tasks:
                     await asyncio.gather(*child_tasks, return_exceptions=True)
-                save_interrupted_context()
+                self.save_reply_context(pending, timeline, memory_vm, context_space)
                 self.turn_taking.finish_reply()
         task = asyncio.create_task(coordinate_reply())
         self.turn['task'] = task

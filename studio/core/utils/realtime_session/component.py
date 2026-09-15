@@ -162,8 +162,13 @@ class RealtimeSession:
                                 space="", memory_vm=None)
                     if p is None:
                         return
+                    if timeline:
+                        if interrupted:
+                            timeline.mark_interrupted()
+                        else:
+                            timeline.freeze_playback()
+                        reply = timeline.heard_text()
                     if interrupted:
-                        reply = timeline.heard_text() if timeline else ""
                         if self.BARGE_DEBUG and timeline:
                             print(f"[context] 打断于 {timeline.rendered_ms()}ms，保留回复 "
                                   f"{reply!r}", flush=True)
@@ -224,6 +229,8 @@ class RealtimeSession:
                                 turn["until"] = (max(turn["until"], time.monotonic())
                                                  + len(pcm) / 2 / 24000)
                                 await sock.send_bytes(pcm)
+                                if timeline:
+                                    timeline.mark_sent(len(pcm) // 2)
                         elif t.endswith("output_audio_transcript.delta"):
                             if turn["live"]:
                                 turn["reply"] += ev.delta
@@ -271,10 +278,10 @@ class RealtimeSession:
                                     timeline.mark_generation_complete()
                                 if t.endswith("response.cancelled"):
                                     response_idle.clear()
-                                    heard = timeline.heard_text() if timeline else ""
                                     provider_item_id = turn["provider_item_id"]
                                     if timeline:
                                         timeline.mark_interrupted()
+                                    heard = timeline.heard_text() if timeline else ""
                                     await sock.send_json({
                                         "type": "answer_interrupt",
                                         "output_id": timeline.output_id if timeline else "",
@@ -323,11 +330,11 @@ class RealtimeSession:
                               flush=True)
                     active_response = not response_idle.is_set()
                     timeline = turn["timeline"]
-                    heard_text = timeline.heard_text() if timeline else ""
                     output_id = timeline.output_id if timeline else ""
                     provider_item_id = turn["provider_item_id"]
                     if timeline:
                         timeline.mark_interrupted()
+                    heard_text = timeline.heard_text() if timeline else ""
                     turn["live"], turn["until"] = False, 0.0
                     candidate_paused = False
                     candidate_paused_at = 0.0
@@ -377,7 +384,7 @@ class RealtimeSession:
                         context_space = self.ACTIVE_SPACE
                         memory_vm = self.vm
                         timeline = AudioTimeline(
-                            prebuffer_seconds=0.08, rate_estimator=speech_rate)
+                            prebuffer_seconds=0.08, rate_estimator=speech_rate, track_delivery=True)
                         timelines[timeline.output_id] = timeline
                         turn.update(
                             live=True, reply="", pending=pending,

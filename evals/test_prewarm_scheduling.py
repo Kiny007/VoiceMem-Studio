@@ -42,7 +42,7 @@ def session_namespace():
         BARGE_DEBUG=False, owner={}, speech_rate=None, vm=object(),
         Pending=lambda *a, **kw: types.SimpleNamespace(),
         ReplySink=lambda *a: types.SimpleNamespace(send=None, send_audio=None),
-        AudioTimeline=lambda **kw: object(),
+        AudioTimeline=lambda **kw: types.SimpleNamespace(),
         sock=types.SimpleNamespace(send_json=None), send_audio=None)
     execute(functions, ns)
     ns["agent"] = ns["self"]

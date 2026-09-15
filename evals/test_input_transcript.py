@@ -241,12 +241,16 @@ class PipelineDisplayTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await session.drop_early()
         self.assertEqual(self.sent, [])
+        self.assertEqual(self.saved, [])
+        ns['queue_remember_turn'].assert_not_called()
 
     async def test_accepting_early_reply_cannot_republish_its_snapshot(self):
         ns, memory, send, audio = self.setup_pipeline()
         agent = types.SimpleNamespace(BC_ECHO_WINDOW_S=3, ACTIVE_SPACE='fixture', vm=memory,
             HISTORY_TURNS=6, _SESSION_CONTEXT=self.history, BARGE_DEBUG=False, MIC_RATE=24000,
             route_pending_thinking=AsyncMock(side_effect=lambda p,*a,**k:p),
+            _push_history=ns['_push_history'], queue_remember_turn=ns['queue_remember_turn'],
+            _kick_acoustic=ns['_kick_acoustic'],
             voicemem_llm_tts=ns['_voicemem_llm_tts'])
         session = Conversation(agent, types.SimpleNamespace(send_json=send, send_bytes=audio))
         st = types.SimpleNamespace(memory=empty_result(), route='shallow', eot_score=.9)

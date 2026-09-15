@@ -10,6 +10,8 @@ def initialize(self, agent, sock):
     self.sock = sock
     self.turn_taking = TurnTakingStateMachine(backchannel=Backchannel(policy=backchannel_policy()), echo_window_s=self.agent.BC_ECHO_WINDOW_S)
     self.turn = {'task': None, 'continuation_task': None, 't0': 0.0, 'until': 0.0, 'echo_until': 0.0, 'speech_end': 0.0, 'play_started': False, 'reply': {'text': ''}, 'timeline': None, 'measure_started': 0.0, 'measure_recorded': False}
+    self.turn['finalize'] = None
+    self.turn['generation_task'] = None
     self.owner = {'id': '', 'last': '', 'miss': 0}
     self.speech_rate = SpeechRateEstimator()
     self.context_session = uuid.uuid4().hex

@@ -461,6 +461,18 @@ high EOT score
 Cancellation removes stale reply, TTS, display, and GPU work before a new
 response becomes authoritative.
 
+For conversation-managed chained speech, `Reply` only generates output;
+`Conversation` owns playback waiting and exactly-once context finalization.
+Speculative generation may finish while still private, but cannot start a
+playback-completion timeout, save history or enqueue ingest. Rejection only
+cancels/discards it. Acceptance binds finalization to the confirmed `Pending`,
+including its final text, audio and routing/privacy metadata, while retaining
+the existing generated reply and reuse decision. Normal replies and delayed
+continuation follow-ups use the same finalizer. Cancellation before a handoff
+task's first execution still reaps any adopted generator and finalizes the
+confirmed user input once. Legacy direct `Reply` callers retain their existing
+standalone finalization path.
+
 The Web demo uses EOT both to start speculative reply work and, after acoustic
 silence plus pause-policy approval, to end the Studio user turn. `VoiceStream` owns the
 immutable audio snapshot and final-ASR refinement; `studio/core/utils/capture/component.py` owns the policy
@@ -766,6 +778,19 @@ Browser-rendered source samples determine the interruption cutoff. Text mapping
 uses provider alignment when available, completed-segment duration otherwise,
 and calibrated speech rate as the fallback.
 
+Studio timelines explicitly separate `generated_samples` (including private
+`ReplySink` PCM) from `sent_samples` recorded after a successful transport send.
+Only playback checkpoints establish rendered progress, bounded by delivery;
+without a report the confirmed progress is zero. A playback-completion timeout
+does not promote buffered or delivered audio to heard audio. Legacy timeline
+callers can retain append-as-emission and elapsed-time fallback behavior, but
+Studio's chained and realtime sessions use explicit delivery tracking.
+An interruption freezes both sample cutoff and mapped text before cancelling
+workers, so later clock ticks, alignments, audio or checkpoints cannot change
+the UI/history prefix. Ordinary finalization also freezes its final checkpoint.
+Realtime keeps its existing single `close_turn` owner and shares these playback
+rules. These bookkeeping changes add no model calls or pre-audio waits.
+
 Interruption separates reversible detection from cancellation:
 
 1. Candidate speech pauses playback while preserving the PCM queue.
@@ -809,6 +834,14 @@ current user input
 After a normal or interrupted reply, ingest runs outside the response path.
 The completion callback removes the session turn only when durable memory was
 created. Non-persistent dialogue remains until the session ends.
+
+Only confirmed turns enter this path. Chained conversations use one guarded
+finalizer for normal completion, interruption, errors, follow-ups and disconnect;
+unaccepted EOT snapshots never enqueue memory work. The finalizer uses the
+captured final user input and frozen heard assistant prefix, not the speculative
+input or full generated tail. Missing playback reports can therefore omit heard
+words from context rather than inventing unconfirmed playback. The existing
+200-character-per-message storage cap and recent-turn window are unchanged.
 
 Background ingest captures the target `VoiceMem` instance and Memory Space when
 scheduled. A later UI space change cannot redirect an existing write.
