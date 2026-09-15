@@ -1,0 +1,52 @@
+"""Resolve optional Studio integration configuration without contacting Interax."""
+from dataclasses import dataclass
+import os
+from pathlib import Path
+import shutil
+import subprocess
+from urllib.parse import urlsplit
+
+from studio.paths import ROOT
+
+
+@dataclass(frozen=True)
+class Settings:
+    base_url: str
+    root: Path
+
+
+def configuration():
+    """Return settings when enabled; reject ambiguous or credential-bearing URLs."""
+    base_url = os.environ.get("STUDIO_INTERAX_BASE_URL", "").strip()
+    if not base_url:
+        return None
+    url = urlsplit(base_url)
+    if (url.scheme not in {"http", "https"} or not url.hostname
+            or url.username or url.password or url.query or url.fragment):
+        raise ValueError("STUDIO_INTERAX_BASE_URL must be an HTTP(S) service or proxy URL without credentials, query or fragment")
+    url.port
+    root = Path(os.environ.get("STUDIO_INTERAX_ROOT") or ROOT.parent / "Interax").expanduser().resolve()
+    return Settings(base_url, root)
+
+
+def check(settings, *, mode, provider):
+    """Validate the selected adapter and upstream source graph without network I/O."""
+    if settings is None:
+        return
+    if mode != "llm_tts" or provider not in {"deepseek", "qwen", "openai"}:
+        raise ValueError("Interax requires llm_tts with deepseek, qwen or openai")
+    for relative in ("src/interax_sdk/index.js", "src/interax_sdk/package.json",
+                     "demo/web/catalog.js", "demo/web/controller.js"):
+        if not (settings.root / relative).is_file():
+            raise ValueError(f"STUDIO_INTERAX_ROOT is missing {relative}")
+    node = shutil.which("node")
+    if not node:
+        raise ValueError("Interax SDK bridge requires Node.js >=22.12 on PATH")
+    try:
+        version = subprocess.run([node, "--version"], capture_output=True, text=True,
+                                 timeout=5, check=True).stdout.strip().lstrip("v")
+        supported = tuple(int(n) for n in version.split(".")[:2]) >= (22, 12)
+    except (subprocess.SubprocessError, ValueError) as exc:
+        raise ValueError("Could not determine the installed Node.js version") from exc
+    if not supported:
+        raise ValueError("Interax Demo ESM wrappers require Node.js >=22.12")

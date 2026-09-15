@@ -85,9 +85,12 @@ class Reply:
             raise
         except Exception as exc:
             # Surface provider failure without exposing exception details or credentials.
+            from voicemem.reply import reply_tools_active
+            message = ("这次回复未完成。Interax 任务可能已经提交，可继续询问进展。"
+                       if reply_tools_active() else
+                       "回复服务刚才没有及时返回，已自动重试；请再说一次。")
             try:
-                await send({"type": "error", "message":
-                            "回复服务刚才没有及时返回，已自动重试；请再说一次。"})
+                await send({"type": "error", "message": message})
             except Exception:
                 pass
             raise

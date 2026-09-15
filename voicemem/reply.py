@@ -29,7 +29,7 @@ import asyncio
 import inspect
 import os
 from collections.abc import AsyncIterator, Callable
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
@@ -46,6 +46,27 @@ class ReplyRequestOptions:
 
 _REQUEST_OPTIONS: ContextVar[ReplyRequestOptions | None] = ContextVar(
     "voicemem_reply_request_options", default=None)
+
+_TOOL_HANDLER: ContextVar[Callable | None] = ContextVar("voicemem_reply_tool_handler", default=None)
+
+
+@contextmanager
+def reply_tool_handler(handler):
+    """Bind an application tool loop to this task without changing reply signatures.
+
+    The handler receives a request and an async event-stream factory. Providers
+    retain ownership of credentials, streaming transport and connection cleanup.
+    """
+    token = _TOOL_HANDLER.set(handler)
+    try:
+        yield
+    finally:
+        _TOOL_HANDLER.reset(token)
+
+
+def reply_tools_active() -> bool:
+    """Report whether this task can execute tools, including during error cleanup."""
+    return _TOOL_HANDLER.get() is not None
 
 
 @contextmanager
@@ -126,6 +147,31 @@ def openai_reply(model: str | None = None, api_key: str | None = None,
         if str(request["model"]).startswith("qwen"):
             options = _REQUEST_OPTIONS.get() or ReplyRequestOptions()
             request["extra_body"] = {"enable_thinking": options.reasoning_effort != "none"}
+        handler = _TOOL_HANDLER.get()
+        if handler is not None:
+            async def events(payload):
+                record_request("llm", "openai", payload)
+                output = await client.chat.completions.create(**payload)
+                try:
+                    async for chunk in output:
+                        if not chunk.choices:
+                            continue
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        if delta.content:
+                            yield "content", delta.content
+                        if getattr(delta, "reasoning_content", None):
+                            yield "reasoning", delta.reasoning_content
+                        if delta.tool_calls:
+                            yield "tool_calls", [call.model_dump(exclude_none=True) for call in delta.tool_calls]
+                        if choice.finish_reason:
+                            yield "finish", choice.finish_reason
+                finally:
+                    await output.close()
+            async with aclosing(handler(request, events)) as output:
+                async for delta in output:
+                    yield delta
+            return
         record_request("llm", "openai", request)
         stream = await client.chat.completions.create(**request)
         try:
@@ -163,7 +209,7 @@ def deepseek_reply(model: str | None = None, api_key: str | None = None,
         old, client = client, None
         await old.aclose()
 
-    async def stream_once(active_client, request):
+    async def stream_once(active_client, request, *, include_tools=False):
         """Yield one HTTP attempt. The caller owns first-token timing/retry."""
         async with active_client.stream(
                 "POST", url, headers={"Authorization": f"Bearer {key}"},
@@ -190,6 +236,10 @@ def deepseek_reply(model: str | None = None, api_key: str | None = None,
                         content = delta.get("content")
                         if content:
                             yield "content", content
+                        if include_tools and delta.get("tool_calls"):
+                            yield "tool_calls", delta["tool_calls"]
+                        if include_tools and choices[0].get("finish_reason"):
+                            yield "finish", choices[0]["finish_reason"]
             raise RuntimeError("DeepSeek stream ended before [DONE]")
 
     async def fn(text: str, memory_context: str = "", history: list | None = None):
@@ -212,6 +262,25 @@ def deepseek_reply(model: str | None = None, api_key: str | None = None,
             request["enable_thinking"] = effort != "none"
         elif effort != "none":
             request["reasoning_effort"] = effort
+        handler = _TOOL_HANDLER.get()
+        if handler is not None:
+            async def events(payload):
+                nonlocal client
+                if client is None:
+                    client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0))
+                record_request("llm", protocol, payload)
+                output = stream_once(client, payload, include_tools=True)
+                try:
+                    first = await asyncio.wait_for(anext(output), timeout=first_token_timeout)
+                    yield first
+                    async for event in output:
+                        yield event
+                finally:
+                    await output.aclose()
+            async with aclosing(handler(request, events)) as output:
+                async for delta in output:
+                    yield delta
+            return
         record_request("llm", protocol, request)
         last_error = None
         for attempt in range(2):

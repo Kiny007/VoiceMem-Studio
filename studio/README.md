@@ -180,6 +180,14 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m evals.router_quality --device 
 句末或 LLM 输出结束会立即提交，不固定等待到上限。长度兜底为首段 48、后续 100 字符，
 首段达到 28、后续达到 60 字符时允许逗号等软边界。语气指令和音频 chunk 参数未改变。
 
+## 可选：Interax 后端能力
+
+Interax 后端能力可通过服务端官方 SDK 桥接启用，支持 `llm_tts` 的
+DeepSeek/Qwen/OpenAI 回复模型。配置 `STUDIO_INTERAX_BASE_URL`，并为 Studio
+运行环境提供 Node >=22.12 和 Interax 源码；详细配置、能力路由、结果范围与
+Linux 验证步骤见 [Interax 接入说明](../docs/interax.md)。此模式关闭提前生成，
+只在确认后的用户回合执行工具；页面 Renderer 和逐页 Player 尚未接入。
+
 ## 可选：CUDA 性能验证
 
 CUDA 默认预热并使用 depth decoder 的编译加速，首次启动需要等待 CUDA graph 准备。

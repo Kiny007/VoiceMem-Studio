@@ -236,6 +236,13 @@ class Conversation:
 
     async def start_early(self, text, st, refined_text=None):
         """Run final ASR on the EOT snapshot, then buffer the early reply."""
+        if getattr(self, 'interax_settings', None) is not None:
+            # Speculative speech must not commit backend work or be reused as a
+            # tool-free answer to a confirmed request that requires execution.
+            if refined_text is not None:
+                refined_text.cancel()
+                await asyncio.gather(refined_text, return_exceptions=True)
+            return
         self.stop_prewarm()
         await self.drop_early('换了新的赌注')
         if refined_text is None:
@@ -312,15 +319,17 @@ class Conversation:
             continuation_task.cancel()
             await asyncio.gather(continuation_task, return_exceptions=True)
         task = self.turn['task']
-        if task is None or task.done():
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f'[web] 回复收尾失败：{type(e).__name__}: {e}', flush=True)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f'[web] 回复收尾失败：{type(e).__name__}: {e}', flush=True)
+        bridges = getattr(self, 'interax_sessions', {})
+        await asyncio.gather(*(bridge.aclose() for bridge in bridges.values()))
+        bridges.clear()
 
     def reply_done(self, done_task):
         try:
@@ -478,7 +487,18 @@ class Conversation:
 
         async def run_reply(send_json=self.sock.send_json, send_pcm=self.send_audio, pending=pending, timeline=timeline, context_space=context_space, memory_vm=memory_vm, reply_state=reply_state):
             try:
-                await self.agent.voicemem_llm_tts(pending, send_json, send_pcm, self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
+                from voicemem.reply import reply_tool_handler
+                handler = None
+                if getattr(self, 'interax_settings', None) is not None and not pending.stranger and not pending.continuation_prompt:
+                    from studio.core.utils.interax.component import Interax
+                    from studio.core.utils.llm.tools import ToolLoop
+                    bridge = self.interax_sessions.get(context_space)
+                    if bridge is None:
+                        bridge = Interax(self.interax_settings)
+                        self.interax_sessions[context_space] = bridge
+                    handler = ToolLoop(bridge, current=lambda: self.agent.ACTIVE_SPACE == context_space and self.agent.vm is memory_vm)
+                with reply_tool_handler(handler):
+                    await self.agent.voicemem_llm_tts(pending, send_json, send_pcm, self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
             finally:
                 save_interrupted_context()
         ack = self.cached_ack(pending)

@@ -6,6 +6,9 @@ from studio.core.utils.turn_taking.initialize import Backchannel, TurnTakingStat
 from studio.core.utils.audio_timeline.component import SpeechRateEstimator
 
 def initialize(self, agent, sock):
+    from studio.core.utils.interax.initialize import configuration
+    self.interax_settings = configuration()
+    self.interax_sessions = {}
     self.agent = agent
     self.sock = sock
     self.turn_taking = TurnTakingStateMachine(backchannel=Backchannel(policy=backchannel_policy()), echo_window_s=self.agent.BC_ECHO_WINDOW_S)

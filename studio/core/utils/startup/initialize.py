@@ -17,6 +17,11 @@ def required_credentials(args):
 def inspect(args):
     """Report missing prerequisites together, without printing any secret value."""
     errors = []
+    try:
+        from studio.core.utils.interax.initialize import configuration, check
+        check(configuration(), mode=args.mode, provider=args.llm)
+    except (ValueError, OSError, RuntimeError) as exc:
+        errors.append(f'Interax configuration: {exc}')
     print(f'[startup] Python {platform.python_version()} · {platform.machine()} · {sys.executable}', flush=True)
     if sys.version_info[:2] != (3, 12):
         errors.append('Studio 需要 Python 3.12，请切换原有 Studio 环境')

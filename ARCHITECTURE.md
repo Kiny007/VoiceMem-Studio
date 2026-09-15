@@ -62,11 +62,43 @@ Owned by `studio/core/voiceagent.py`, its `utils/` modules, and `studio/harness/
 This plane may use memory results but does not define factual or affective
 storage semantics.
 
-The four editable policy files are `studio/harness/{persona,speaking_style,
+The four base editable policy files are `studio/harness/{persona,speaking_style,
 reply_modes,turn_taking}/policy.py`. Each folder contains one policy module;
 execution belongs to the corresponding `studio/core/utils/` component. Studio
 uses one prompt per purpose without language variants. `--lang` still selects
 ASR and Memory Space language; the memory library retains its own prompt inputs.
+
+The optional Interax policy lives in `studio/harness/interax/policy.py`, with
+execution in `studio/core/utils/interax/` and `studio/core/utils/llm/tools.py`.
+On confirmed `llm_tts` turns, a task-local provider-neutral handler in
+`voicemem/reply.py` exposes the selected provider's streaming events to a bounded
+Studio tool loop. Providers retain credentials and HTTP ownership; the memory
+package does not import Studio or Interax. The loop combines the existing
+persona/history/memory request with live Skill metadata and upstream SDK method
+descriptions. SDK results return as tool messages to the same reply model.
+
+Each WebSocket Conversation owns an Interax Node bridge per Memory Space.
+The bridge imports the official SDK and Demo wrappers from a configured source
+tree and uses local IPC with Python; it implements no backend HTTP protocol.
+The foreground turn captures its Memory Space and VoiceMem instance. Stale
+model/tool results cannot execute subsequent operations or enter TTS.
+Cancelled IPC callers leave one owned response-draining task; later calls wait
+for it, and disconnect reaps it and the Node process. Stopping a local wait or
+disconnecting does not cancel or delete the remote Session. Backend cancellation
+requires the explicit SDK action. An unknown IPC outcome is never automatically
+resubmitted. A failed bridge stays closed for its Conversation/space.
+
+Enabling `STUDIO_INTERAX_BASE_URL` requires Node >=22.12, the upstream sources
+(`STUDIO_INTERAX_ROOT`, default sibling checkout), and a DeepSeek/Qwen/OpenAI
+`llm_tts` provider. Early speculative replies are disabled for enabled
+conversations; filler, continuation-follow-up and stranger replies have no tool
+handler. Tool-enabled rounds buffer text until the model's tool/text decision is
+complete; only final text reaches the existing speech pipeline. Ordinary
+disabled-mode streaming and memory behavior retain their existing contracts.
+This mode retrieves actual text, questions, page catalogs and results. It does
+not supply an Interax Renderer/Player or send display/playback receipts. The
+browser remains a client of Studio only. Deployment, timing limits and offline
+regressions are described in `docs/interax.md`.
 
 The local Qwen3-0.6B classifier selects ordinary or deep reasoning after ASR.
 Studio combines that depth with VoiceMem memory eligibility into the existing
