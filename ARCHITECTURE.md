@@ -352,6 +352,18 @@ block WebSocket input. At turn end, full-audio ASR refinement may run in a
 separate final-ASR executor. Epoch checks prevent obsolete worker results from
 overwriting a newer turn.
 
+ASR finalization gives full-audio refinement an 80 ms preference window, then
+accepts the first non-empty result from refinement or streaming flush. Passing
+the preference window does not cancel refinement while streaming is unfinished.
+The two decoders share a one-second finalization deadline, including queue time;
+if neither produces usable text, the last available transcript is retained and
+the streaming worker advances its epoch to discard stale work. Timeout fallbacks
+are logged even when detailed ASR timing is disabled. Standalone offline probes
+and speculative snapshots use the same one-second wait limit. Cancelling a wait
+does not forcibly terminate native inference, but late results cannot update
+turn text. These limits bound ASR waits, not VAD turn detection, memory retrieval,
+reply generation or playback.
+
 The complete captured audio remains available for archive and final decoding
 even when obsolete streaming chunks are skipped.
 

@@ -7,6 +7,7 @@ import time
 import tempfile
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import numpy as np
@@ -123,6 +124,207 @@ class FinishTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.flushed.cancelled())
         self.assertEqual(self.resets, 1)
         np.testing.assert_array_equal(received[0], pcm)
+
+    async def test_final_after_grace_bypasses_stalled_stream(self):
+        def transcribe(_):
+            time.sleep(.12)
+            return "late full result"
+        stream = self.make_stream(transcribe)
+        await asyncio.wait_for(stream._finish_asr(np.ones(100)), .5)
+        self.assertEqual(stream._text, "late full result")
+        self.assertEqual(stream._raw_text, "late full result")
+        self.assertTrue(self.flushed.cancelled())
+        self.assertEqual(self.resets, 1)
+
+    async def test_empty_stream_does_not_discard_late_valid_final(self):
+        def transcribe(_):
+            time.sleep(.12)
+            return "late full result"
+        stream = self.make_stream(transcribe)
+        self.flushed.set_result("   ")
+        await asyncio.wait_for(stream._finish_asr(np.ones(100)), .5)
+        self.assertEqual(stream._text, "late full result")
+
+    async def test_stream_after_grace_wins_without_waiting_for_final(self):
+        release, finished = threading.Event(), threading.Event()
+        def transcribe(_):
+            try:
+                release.wait(2)
+                return "obsolete final"
+            finally:
+                finished.set()
+        stream = self.make_stream(transcribe)
+        task = asyncio.create_task(stream._finish_asr(np.ones(100)))
+        try:
+            await asyncio.sleep(.12)
+            self.flushed.set_result("complete streaming")
+            await asyncio.wait_for(task, .3)
+            self.assertEqual(stream._text, "complete streaming")
+            self.assertEqual(self.resets, 0)
+            stream._text = "new turn"
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1)
+        await asyncio.sleep(0)
+        self.assertEqual(stream._text, "new turn")
+
+    async def test_ready_stream_retains_the_short_final_grace(self):
+        release, finished = threading.Event(), threading.Event()
+        def transcribe(_):
+            try:
+                release.wait(2)
+                return "late final"
+            finally:
+                finished.set()
+        stream = self.make_stream(transcribe)
+        self.flushed.set_result("complete streaming")
+        task = asyncio.create_task(stream._finish_asr(np.ones(100)))
+        try:
+            await asyncio.sleep(.02)
+            self.assertFalse(task.done())
+            await asyncio.wait_for(task, .3)
+            self.assertEqual(stream._text, "complete streaming")
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1)
+
+    async def test_stalled_stream_with_no_final_has_a_logged_deadline(self):
+        stream = self.make_stream(lambda _: None)
+        stream._final_asr = None
+        with patch('voicemem.stream.ASR_FINISH_TIMEOUT_S', .05), \
+                patch('voicemem.stream.ASR_DEBUG', False), patch('builtins.print') as log:
+            await asyncio.wait_for(stream._finish_asr(np.ones(100)), .5)
+        self.assertEqual(stream._text, "partial")
+        self.assertTrue(self.flushed.cancelled())
+        self.assertEqual(self.resets, 1)
+        self.assertTrue(any('收尾等待超时' in str(call) for call in log.call_args_list))
+
+    async def test_both_stalled_decoders_fall_back_and_late_final_cannot_mutate_text(self):
+        release, finished = threading.Event(), threading.Event()
+        def transcribe(_):
+            try:
+                release.wait(2)
+                return "obsolete full result"
+            finally:
+                finished.set()
+        stream = self.make_stream(transcribe)
+        try:
+            with patch('voicemem.stream.ASR_FINISH_TIMEOUT_S', .05):
+                await asyncio.wait_for(stream._finish_asr(np.ones(100)), .5)
+            self.assertEqual(stream._text, "partial")
+            self.assertTrue(self.flushed.cancelled())
+            self.assertEqual(self.resets, 1)
+            stream._text = "new turn"
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1)
+        await asyncio.sleep(0)
+        self.assertEqual(stream._text, "new turn")
+
+    async def test_failed_flush_can_use_later_final(self):
+        def transcribe(_):
+            time.sleep(.12)
+            return "full result"
+        stream = self.make_stream(transcribe)
+        self.flushed.set_exception(RuntimeError("synthetic flush failure"))
+        await asyncio.wait_for(stream._finish_asr(np.ones(100)), .5)
+        self.assertEqual(stream._text, "full result")
+
+    async def test_cancel_after_grace_reaps_both_waits_without_changing_text(self):
+        release, finished = threading.Event(), threading.Event()
+        def transcribe(_):
+            try:
+                release.wait(2)
+                return "obsolete"
+            finally:
+                finished.set()
+        stream = self.make_stream(transcribe)
+        task = asyncio.create_task(stream._finish_asr(np.ones(100)))
+        try:
+            await asyncio.sleep(.12)
+            self.assertFalse(task.done())
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(self.flushed.cancelled())
+            self.assertEqual(stream._text, "partial")
+            stream._text = "new turn"
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1)
+        await asyncio.sleep(0)
+        self.assertEqual(stream._text, "new turn")
+
+    async def test_snapshot_timeout_keeps_frozen_text_not_later_partial(self):
+        release, finished = threading.Event(), threading.Event()
+        def transcribe(_):
+            try:
+                release.wait(2)
+                return "obsolete"
+            finally:
+                finished.set()
+        stream = self.make_stream(transcribe)
+        stream._pcm = [np.ones(160)]
+        try:
+            with patch('voicemem.stream.ASR_FINISH_TIMEOUT_S', .05):
+                task = stream.refine_current_snapshot()
+                stream._text = "new turn"
+                result = await asyncio.wait_for(task, .5)
+            self.assertEqual(result, "partial")
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1)
+        self.assertEqual(stream._text, "new turn")
+
+    async def test_offline_deadline_includes_queue_time_and_cancels_unstarted_decode(self):
+        release, started = threading.Event(), threading.Event()
+        calls = []
+        executor = ThreadPoolExecutor(max_workers=1)
+        def occupy():
+            started.set()
+            release.wait(2)
+        blocker = executor.submit(occupy)
+        stream = self.make_stream(lambda _: calls.append(True) or "unused")
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            with patch('voicemem.stream._FINAL_ASR_EXECUTOR', executor), \
+                    patch('voicemem.stream.ASR_FINISH_TIMEOUT_S', .05):
+                result = await asyncio.wait_for(stream._final_text_async(np.ones(100)), .5)
+            self.assertIsNone(result)
+        finally:
+            release.set()
+            await asyncio.wrap_future(blocker)
+            executor.shutdown(wait=True)
+        self.assertEqual(calls, [])
+
+    async def test_textless_probe_timeout_returns_to_capture_without_inventing_a_turn(self):
+        release, finished = threading.Event(), threading.Event()
+        def transcribe(_):
+            try:
+                release.wait(2)
+                return "obsolete"
+            finally:
+                finished.set()
+        stream = self.make_stream(transcribe)
+        stream._text = ""
+        stream._asr_w.push = lambda _: ""
+        stream.textless_confirm_s = stream.confirm_s = .02
+        self.speaking = True
+        stream._vad = types.SimpleNamespace(is_speech=lambda _: self.speaking)
+        pcm = np.zeros(480, np.int16).tobytes()
+        for _ in range(8):
+            await stream.feed(pcm)
+        self.speaking = False
+        try:
+            with patch('voicemem.stream.ASR_FINISH_TIMEOUT_S', .05):
+                result = await asyncio.wait_for(stream.feed(pcm), .5)
+            self.assertIsNone(result.turn)
+            self.assertTrue(stream._textless_probed)
+            self.assertGreater(stream._pcm_len, 0)
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 1)
+        self.assertEqual(stream._text, "")
 
     async def test_valid_stream_still_waits_for_full_audio_refinement(self):
         release = threading.Event()
