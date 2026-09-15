@@ -16,6 +16,44 @@ from studio.core.utils.reply_modes.initialize import (
 
 
 class ThinkingRouterTests(unittest.TestCase):
+    def test_harness_examples_use_the_runtime_context_format(self):
+        from studio.harness.reply_modes.policy import EXAMPLES
+        router = QwenThinkingRouter(model='/unused')
+        labels = set()
+        for example, label in EXAMPLES:
+            labels.add(label)
+            recent, separator, current = example.partition('\n当前用户：')
+            self.assertTrue(separator)
+            recent = recent.removeprefix('最近对话：\n')
+            history = []
+            if recent != '无':
+                for line in recent.splitlines():
+                    role, content = line.split(': ', 1)
+                    history.append({'role': {'用户':'user', '助手':'assistant'}[role],
+                                    'content': content})
+            self.assertEqual(router._context_prompt(current, history, False), example)
+        self.assertEqual(labels, {'是', '否'})
+
+    def test_policy_distinguishes_recall_from_reasoning_and_scopes_history(self):
+        from studio.harness.reply_modes.policy import SYSTEM, EXAMPLES
+        self.assertIn('不判断是否检索记忆', SYSTEM)
+        self.assertIn('不延续上一轮的思考等级', SYSTEM)
+        self.assertIn('询问已经得出的结果', SYSTEM)
+        self.assertIn('疑问句形式的请求', SYSTEM)
+        self.assertTrue(any('历史需求' in text and label == '是' for text, label in EXAMPLES))
+        self.assertTrue(any('旅行日期' in text and label == '否' for text, label in EXAMPLES))
+
+    def test_quality_sets_are_disjoint_and_report_false_and_missed_cot(self):
+        from evals.router_quality import CASES, HOLDOUT_CASES, evaluate
+        self.assertFalse({row[0] for row in CASES} & {row[0] for row in HOLDOUT_CASES})
+        router = QwenThinkingRouter(model='/unused')
+        router._predict = lambda *_: '否'
+        result = evaluate(router, (
+            ('合成普通问题', (), 'memory'),
+            ('合成复杂问题', (), 'memory_cot')))
+        self.assertEqual((result['false_cot'], result['missed_cot']), (0, 1))
+        self.assertEqual((result['ordinary_cases'], result['deep_cases']), (1, 1))
+
     def test_missing_default_router_downloads_to_project_model_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "Qwen3-0.6B"
@@ -167,6 +205,18 @@ class MemoryRoutingIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(pending.result, result)
         self.assertEqual(pending.memory_context, 'existing-context')
         self.assertEqual(pending.replay, 'existing-replay')
+        self.agent.vm.search.assert_not_called()
+
+    async def test_ordinary_followups_keep_gate_approved_memory(self):
+        for text in ('我后天约了谁？', '所以最后的结果是多少？', '帮我想想午饭吃什么。'):
+            with self.subTest(text=text):
+                pending = self.pending(prepared=True)
+                pending.text = text
+                result = pending.result
+                await self.agent.route_pending_thinking(pending)
+                self.assertEqual(pending.reply_mode, 'memory')
+                self.assertIs(pending.result, result)
+                self.assertEqual(pending.memory_context, 'existing-context')
         self.agent.vm.search.assert_not_called()
 
     async def test_existing_gate_handles_history_without_studio_keyword_rules(self):

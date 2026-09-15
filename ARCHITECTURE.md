@@ -559,8 +559,17 @@ VoiceMem's existing Gate for memory eligibility, and Qwen3-0.6B for reasoning de
 The model receives current text plus up to four context messages sharing the
 existing 320-character history budget. It answers only whether deep reasoning
 is needed and does not receive memory-prefetch hints. Studio-specific topic,
-date and greeting regex shortcuts are not used. Inference remains off-loop
-on the shared `GpuLoop` for the MLX backend, using the same local Qwen weights
+date and greeting regex shortcuts are not used. Each decision uses one off-loop
+classification request, not a second model judge or a keyword override.
+The editable depth policy treats recall, ordinary explanation, simple formula
+application and requests for an already-derived result as ordinary reasoning.
+Explicit current deep-thinking requests and genuinely complex derivation,
+diagnosis or multi-constraint planning remain deep. History resolves references;
+an earlier difficult topic or a verbose assistant answer does not carry a sticky
+depth into the next turn. Few-shot examples use the same bounded-history/current-
+input framing as runtime requests. An ordinary depth decision still retains
+Gate-approved memory.
+Inference executes on the shared `GpuLoop` for the MLX backend, using the same local Qwen weights
 quantized to 8 bits at load time. Its immutable KV prefix includes only the
 system prompt and examples; every request receives a separate cache copy after
 verifying the token prefix. CUDA and explicit `STUDIO_ROUTER_BACKEND=torch`
@@ -601,6 +610,13 @@ the speech loop.
 The reply model may prefix text with a tone tag. `studio/core/utils/tts/control.py` removes
 that control tag, smooths abrupt tone transitions, and converts it into a TTS
 instruction. Control tags are never spoken or stored as assistant text.
+The reply pipeline buffers a possible leading tone tag across deltas. If the
+provider ends normally before that buffer becomes a recognized tag or reaches
+the streaming fallback length, nonempty buffered text is delivered once as
+plain reply text to subtitles, the audio timeline and TTS. Recognized tag-only
+output and whitespace remain silent. Cancellation and provider failure discard
+the pending prefix instead of flushing it; speculative output still follows
+the existing `ReplySink` commitment and heard-prefix rules.
 
 The TTS layer accepts plain 24 kHz mono PCM16 bytes and optional
 `TimedAudioChunk` alignment metadata. Segment concurrency is selected by the

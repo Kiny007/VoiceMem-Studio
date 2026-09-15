@@ -158,6 +158,11 @@ Install the matching extra in its own environment; do not combine both extras.
 普通推理或小模型调用失败都不会否决 Gate 已批准的记忆；陌生人声纹仍不能访问主人记忆。
 原 Gate 和小模型都可能误判，但记忆与推理各自负责自己的部分，不再重复筛掉记忆。
 
+深思提示词按“当前这一轮是否需要复杂推理”判断，不因上一轮谈过难题而一直保持 CoT。
+查日程或偏好、简单公式计算、询问现成结果、普通建议与解释通常不启用 thinking；
+明确请求深入思考、复杂证明、故障因果分析、多约束权衡仍可进入 mem+cot。
+没有新增关键词拦截或第二次模型判定，普通推理也不会取消原 Gate 已批准的记忆检索。
+
 mem+cot 在正文音频尚未就绪时，按 **30% 概率**尝试长垫话。每个确认回合只抽一次；
 实际发出后，按音频时长再加 **20 秒冷却**限制下一次，未命中不补其他附和。
 文字复用已加载的 Qwen3-0.6B 生成，不再调用正文 API；带当前全文和最近两条各最多
@@ -174,9 +179,12 @@ mem+cot 在正文音频尚未就绪时，按 **30% 概率**尝试长垫话。每
 ```bash
 python -m unittest evals.test_work_filler evals.test_thinking_router evals.test_dialogue_harness.TurnTakingTimingTests
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m evals.router_quality --device cuda:0 --assert-quality
+# Optional old/new comparison and a separate paraphrase set (local GPU only).
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m evals.router_quality --device cuda:0 --compare-ref b27bce0 --holdout
 ```
 
-后者仅测本地模型的深思分类，不访问记忆库；记忆资格的保留由前面的确定性回归验证。
+模型测试仅测本地模型的深思分类，不访问记忆库；分别报告普通问题误进 CoT、复杂问题漏判及耗时。
+记忆资格的保留由前面的确定性回归验证。
 这些检查不能替代实际记忆召回、完整 GPU 负载下的延迟或真实听感验收。
 
 ## TTS 切句

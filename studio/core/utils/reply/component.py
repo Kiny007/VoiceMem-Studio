@@ -338,6 +338,15 @@ class Reply:
                 timeline.append_text(d)
                 await send({"type": "answer_delta", "text": d})
                 text_queue.put_nowait(d)
+            # Normal EOF resolves an unrecognized short prefix as plain speech.
+            # Keep this outside finally so cancellation/errors never flush it.
+            if tone["head"] and tone["buf"].strip():
+                d = tone["buf"]
+                tone["head"], tone["buf"] = False, ""
+                reply += d
+                timeline.append_text(d)
+                await send({"type": "answer_delta", "text": d})
+                text_queue.put_nowait(d)
         except asyncio.CancelledError:
             interrupted = True
         except Exception:
