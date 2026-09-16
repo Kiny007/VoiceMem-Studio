@@ -14,7 +14,7 @@ let launcher, studio, current = { ...runtime.DEFAULTS }, attempt, generation = 0
 let status = { kind: 'idle', message: '连接已运行的服务，或启动本机 Docker。' };
 let writes = Promise.resolve();
 let quitting = false;
-let pet, petEnabled = true;
+let pet, petEnabled = true, ownedBackend;
 const microphoneGrants = new Set();
 
 async function showPet() {
@@ -34,6 +34,11 @@ function cancelConnection() {
   generation += 1;
   attempt?.abort();
   attempt = undefined;
+}
+
+function backendExitError(result) {
+  if (result.error) return new Error(`本机后端启动失败：${result.error.message}`);
+  return new Error(`本机后端已退出${result.code === null ? '' : `，状态码 ${result.code}`}${result.signal ? `（${result.signal}）` : ''}。`);
 }
 
 function assertLauncher(event) {
@@ -190,6 +195,51 @@ async function connect(value, persist = true) {
   }
 }
 
+async function connectManaged(config) {
+  cancelConnection();
+  const ownGeneration = generation;
+  const control = new AbortController();
+  attempt = control;
+  current = { ...runtime.DEFAULTS };
+  try {
+    ownedBackend?.stop();
+    publish('connecting', `正在启动本机 ${process.platform === 'darwin' ? 'MLX' : 'WSL2/CUDA'} 后端…`);
+    const backend = await runtime.startManagedBackend(config.projectDir, config.provider, {
+      signal: control.signal,
+    });
+    ownedBackend = backend;
+    let ready = false;
+    const exitWatch = backend.exited.then(result => {
+      if (!ready) throw backendExitError(result);
+      if (ownedBackend === backend) ownedBackend = undefined;
+      if (!quitting && studio && !studio.isDestroyed()) {
+        studio.destroy();
+        publish('error', backendExitError(result).message);
+        void showLauncher();
+      }
+    });
+    publish('connecting', `正在准备 ${config.provider} 后端，首次模型预热可能需要几分钟…`);
+    await Promise.race([
+      runtime.waitForStudio(backend.url, {
+        signal: control.signal,
+        onWait: seconds => publish('connecting', `等待本机后端就绪 · ${seconds} 秒。首次模型预热可能需要几分钟。`),
+      }),
+      exitWatch,
+    ]);
+    ready = true;
+    control.signal.throwIfAborted();
+    await openStudio(backend.url, ownGeneration);
+  } catch (error) {
+    if (ownGeneration !== generation || control.signal.aborted) return;
+    ownedBackend?.stop();
+    ownedBackend = undefined;
+    publish('error', error.message || '本机后端启动失败。');
+    void showLauncher();
+  } finally {
+    if (ownGeneration === generation) attempt = undefined;
+  }
+}
+
 function installMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
@@ -216,7 +266,7 @@ function installMenu() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { const window = studio || launcher; if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });
-  app.on('before-quit', () => { quitting = true; cancelConnection(); pet?.close(); });
+  app.on('before-quit', () => { quitting = true; cancelConnection(); ownedBackend?.stop(); pet?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('activate', () => {
     if (studio && !studio.isDestroyed()) studio.show();
@@ -224,8 +274,11 @@ else {
   });
   app.whenReady().then(async () => {
     nativeTheme.themeSource = 'dark';
-    let configError;
-    try { current = await runtime.loadSettings(configurationFile); } catch (error) { configError = error.message; }
+    let configError, managed;
+    try {
+      managed = runtime.managedLaunch(process.env);
+      current = managed ? { ...runtime.DEFAULTS } : await runtime.loadSettings(configurationFile);
+    } catch (error) { configError = error.message; }
     installMenu();
     try {
       pet = createPet({ onHidden: () => {
@@ -259,9 +312,18 @@ else {
       void connect(next);
       return true;
     });
-    ipcMain.handle('studio-desktop:cancel', event => { assertLauncher(event); cancelConnection(); publish('idle', '已取消等待；已经启动的 Docker 服务不会被停止。'); });
+    ipcMain.handle('studio-desktop:cancel', event => {
+      assertLauncher(event);
+      cancelConnection();
+      if (managed) {
+        ownedBackend?.stop();
+        ownedBackend = undefined;
+        publish('idle', '已取消本机后端启动。');
+      } else publish('idle', '已取消等待；已经启动的 Docker 服务不会被停止。');
+    });
     await showLauncher(false);
     if (configError) { publish('error', configError); void showLauncher(); }
+    else if (managed) void connectManaged(managed);
     else void connect(current, false);
   }).catch(error => { dialog.showErrorBox('VoiceMem Studio 启动失败', error.message); app.quit(); });
 }

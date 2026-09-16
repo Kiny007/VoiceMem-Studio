@@ -4,8 +4,42 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vm = require('node:vm');
+const { PassThrough, Readable } = require('node:stream');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const launch = require('../launch.cjs');
+
+test('npm start selects a provider and passes its credential without printing it', async () => {
+  let printed = '';
+  const output = { write(value) { printed += value; } };
+  const env = await launch.launchEnvironment({
+    platform: 'darwin', env: {}, input: Readable.from(['qwen\n']), output,
+    askSecret: async () => 'dashscope-test-secret',
+  });
+  assert.equal(env.VOICEMEM_DESKTOP_MANAGED_PROVIDER, 'qwen');
+  assert.equal(env.DASHSCOPE_API_KEY, 'dashscope-test-secret');
+  assert.equal(path.basename(env.VOICEMEM_DESKTOP_PROJECT_ROOT), 'VoiceMem-Studio');
+  assert.equal(printed.includes('dashscope-test-secret'), false);
+});
+
+test('provider menu only offers local MLX on macOS', () => {
+  assert.equal(launch.selectProvider('4', 'darwin').id, 'local');
+  assert.equal(launch.selectProvider('local', 'win32'), undefined);
+  assert.equal(launch.selectProvider('', 'win32').id, 'deepseek');
+});
+
+test('API key input is masked and returns the entered value', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = value => { input.raw = value; };
+  let printed = '';
+  const secret = launch.readSecret('Key: ', { input, output: { write(value) { printed += value; } } });
+  input.write('secret-value\n');
+  assert.equal(await secret, 'secret-value');
+  assert.equal(printed.includes('secret-value'), false);
+  assert.match(printed, /\*{12}/);
+  assert.equal(input.raw, false);
+});
 
 test('configuration page omits the removed descriptive copy', async () => {
   const html = await fs.readFile(path.join(__dirname, '../launcher.html'), 'utf8');

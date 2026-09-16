@@ -38,6 +38,54 @@ test('settings persist only connection fields and reject malformed data', async 
   assert.throws(() => r.settings({ ...r.DEFAULTS, autoStartDocker: 'true' }));
 });
 
+test('managed npm launch validates its project and provider', () => {
+  assert.equal(r.managedLaunch({}), null);
+  assert.deepEqual(r.managedLaunch({
+    VOICEMEM_DESKTOP_PROJECT_ROOT: '/fixture/project',
+    VOICEMEM_DESKTOP_MANAGED_PROVIDER: 'qwen',
+  }), { projectDir: '/fixture/project', provider: 'qwen' });
+  assert.throws(() => r.managedLaunch({
+    VOICEMEM_DESKTOP_PROJECT_ROOT: '/fixture/project',
+    VOICEMEM_DESKTOP_MANAGED_PROVIDER: 'unknown',
+  }), /配置无效/);
+});
+
+test('managed macOS backend uses MLX and keeps credentials out of arguments', async t => {
+  const directory = await temporary(t);
+  for (const file of ['compose.yaml', 'pyproject.toml']) await fs.writeFile(path.join(directory, file), 'fixture');
+  const python = path.join(directory, '.venv/bin/python');
+  await fs.mkdir(path.dirname(python), { recursive: true });
+  await fs.writeFile(python, 'fixture');
+  const specification = await r.managedBackendCommand(directory, 'deepseek', {
+    platform: 'darwin', env: { DEEPSEEK_API_KEY: 'test-secret' },
+  });
+  assert.equal(specification.file, path.join(await fs.realpath(directory), '.venv/bin/python'));
+  assert.ok(specification.args.includes('mlx'));
+  assert.deepEqual(specification.args.slice(2, 6), ['--backend', 'mlx', '--llm', 'deepseek']);
+  assert.equal(specification.args.includes('test-secret'), false);
+  assert.equal(specification.env.DEEPSEEK_API_KEY, 'test-secret');
+  assert.equal(specification.env.STUDIO_DESKTOP_PET, '0');
+});
+
+test('managed Windows backend starts WSL CUDA without changing Docker', async t => {
+  const directory = await temporary(t);
+  for (const file of ['compose.yaml', 'pyproject.toml']) await fs.writeFile(path.join(directory, file), 'fixture');
+  const calls = [];
+  const specification = await r.managedBackendCommand(directory, 'qwen', {
+    platform: 'win32', env: { DASHSCOPE_API_KEY: 'test-secret' },
+    run: async (file, args) => { calls.push({ file, args }); return '/mnt/c/VoiceMem-Studio'; },
+  });
+  assert.deepEqual(calls, [{ file: 'wsl.exe', args: ['wslpath', '-a', await fs.realpath(directory)] }]);
+  assert.equal(specification.file, 'wsl.exe');
+  assert.deepEqual(specification.args.slice(0, 4), [
+    '--cd', '/mnt/c/VoiceMem-Studio', '--exec', '/mnt/c/VoiceMem-Studio/.venv-cuda/bin/python',
+  ]);
+  assert.ok(specification.args.includes('cuda'));
+  assert.ok(specification.env.WSLENV.split(':').includes('DASHSCOPE_API_KEY/u'));
+  assert.equal(specification.args.includes('test-secret'), false);
+  assert.equal(calls.some(call => call.file === 'docker'), false);
+});
+
 test('Docker startup preserves compose overrides and uses the published port', async t => {
   const directory = await temporary(t);
   const root = await fs.realpath(directory);

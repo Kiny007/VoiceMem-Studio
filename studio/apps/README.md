@@ -2,22 +2,16 @@
 
 ## 双风格 UI 与 API 选择
 
-后端启动时先在命令行选择 DeepSeek / Qwen / OpenAI / 本地 MLX；密钥继续从环境变量或忽略的 `.env` 读取。首页复用原版 `index.html`，保留标题及左右两张带名称、说明的风格卡片；分别进入 `technical.html` 科技风和 `digital.html` 数字人。语言、UI 字号和内容字号在进入后的「设置」中调整。
-
-Mac 在项目根目录启动后端：
-
-```bash
-./scripts/run_studio_mlx.sh
-```
-
-看到服务启动成功后，在另一个终端启动 App：
+源码运行只需要启动 App：
 
 ```bash
 cd studio/apps
 npm start
 ```
 
-也可打开 `http://localhost:8787`。指定 `--llm qwen` 等参数可跳过 API 菜单；`--check` 和非交互启动不询问，非交互默认 DeepSeek。选择 API 影响后端进程；桌面 App 连接已有进程，不会再次改变其模型。
+终端先选择 DeepSeek、Qwen、OpenAI；Apple Silicon Mac 还可选择本地 MLX。随后输入对应 API Key，输入内容以 `*` 隐藏；直接回车会沿用当前环境变量或项目根目录的 `.env`。App 会自动启动 macOS MLX 或 Windows WSL2/CUDA 后端、等待模型就绪，然后直接进入风格选择页。API Key 只传给本次 App 和后端进程，不写入连接设置。
+
+首页复用原版 `index.html`，分别进入 `technical.html` 科技风和 `digital.html` 数字人。语言、UI 字号和内容字号在进入后的「设置」中调整。也可单独打开已运行后端的 `http://localhost:8787`。
 
 UI 源码在 `studio/apps/ui/`，由后端 `/ui/` 提供，App 和浏览器共用。请使用更新后的后端。原界面保留在 `/legacy`。
 两种风格的文字、ASR、回复、情绪和召回面板使用现有服务事件；脑图保留视觉导航示意，不代表真实节点数量。聊天列表暂存在当前页面，刷新重置；切换历史条目后的新输入会建立新后端会话。原始 `voicemem_qa` 项目保持原样。
@@ -45,8 +39,9 @@ npm ci
 npm start
 ```
 
-默认连接 `http://127.0.0.1:8787`。启动时显示黑灰配置页，服务就绪后自动打开主窗口。
-服务仍在预热时最多等待三分钟；超时可以重试，不会停止后端。
+`npm start` 自动使用项目根目录已有的 Python 环境：macOS 为 `.venv`，Windows 为 WSL2 中的 `.venv-cuda`。启动时配置页保持隐藏，服务就绪后直接打开风格选择页。
+服务仍在预热时最多等待三分钟；App 退出时会停止它本次启动的后端。
+它不会自动安装 Python、WSL、驱动或依赖；这些环境需要事先按部署文档准备好。
 通过菜单 **Studio → 配置设置**（`Ctrl/Cmd+,`）更改地址。第一次开始语音时会请求麦克风授权。
 
 ## App 内置桌宠
@@ -89,8 +84,8 @@ STUDIO_DESKTOP_PET=0 python -m studio
 - 使用 `up -d --no-build --no-recreate --pull never studio`，不自动构建、拉取镜像或重建已有容器。
 - 退出 App、取消等待均不停止容器，不删除模型、记忆或卷。
 - 自动启动不操作远程 Docker context。远程 GPU 服务器请通过 HTTPS 或 SSH 转发连接。
-- Mac 的 MLX 后端保持原生启动；Mac App 可以连接它，也可以连接远程 GPU 服务。
-- WSL 内原生 Python 后端目前先在 WSL 中启动，Windows App 再连接 localhost；直接管理 `wsl.exe` 的适配尚未实现。
+- `npm start` 的本机启动路径不使用 Docker：Mac 启动原生 MLX，Windows 通过 `wsl.exe` 启动 WSL2/CUDA。
+- 本节的 Docker 选项保持原有 Compose 行为，供已有镜像和共享容器的连接方式使用。
 - Windows named-pipe 与命令参数已做模拟测试，完整 WSL/GPU 流程仍需 Windows 实机验收。
 
 如果镜像还没构建，请先按 [Docker 部署说明](../../docker/README.md) 完成环境准备。
@@ -119,7 +114,7 @@ Mac 正式分发需开发者签名和公证；仓库提供麦克风用途说明�
 ## 安全与数据
 
 - 远程地址必须使用 HTTPS；HTTP 仅允许回环地址。不要通过关闭证书校验或 Web 安全性连接远程服务。
-- 服务地址仅支持根地址，不带用户名、密码、路径或查询参数。LLM API Key 仍配置在后端。
+- 服务地址仅支持根地址，不带用户名、密码、路径或查询参数。`npm start` 输入的 LLM API Key 只通过进程环境传给本机后端；远程后端仍自行管理密钥。
 - 主界面没有 Node.js 或本机 Docker IPC 权限，仅本地配置页有受限的设置接口。
 - 桌宠只有受限窗口操作接口，没有连接设置、Docker 或 Node 权限。资源请求限于内置文件和当前 `/ws-pet`。
 - 麦克风仅对配置的服务主页面授权，不授权摄像头、屏幕录制或第三方 iframe。

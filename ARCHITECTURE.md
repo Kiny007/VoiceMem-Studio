@@ -186,7 +186,18 @@ origin and require user approval; remote connections require HTTPS, while HTTP
 is accepted only on loopback. Settings and browser state live in the desktop
 application-data directory, not in the backend's memory or credential files.
 
-On Windows, an opt-in configuration setting can start an existing local NVIDIA
+The source desktop entry (`npm start`) owns an optional local backend lifecycle.
+Before Electron starts it asks for the reply provider and reads the matching API
+key with masked terminal input. The key is inherited only by Electron and the
+backend process; it is not written to desktop settings or command arguments.
+Electron starts `.venv/bin/python` with the MLX backend on macOS, or invokes
+`.venv-cuda/bin/python` through `wsl.exe` with the CUDA backend on Windows. Both
+paths bind loopback port 8787, disable the backend-owned pet, wait for the shared
+Web page, and then open the style selector. The app stops this owned process on
+exit. Missing Python, WSL, driver, dependency, or model prerequisites produce a
+startup error; the desktop entry does not install or modify system components.
+
+On Windows, an opt-in configuration setting can also start an existing local NVIDIA
 Compose service through a local Docker named pipe. Docker Desktop must already
 be running with its WSL2 backend; the app never starts or installs the Docker
 engine or WSL itself. The Unix-socket path remains available to isolated Linux
@@ -194,9 +205,9 @@ development tests, not as a Linux desktop release. Startup uses the user-approve
 never builds or pulls an image or recreates an existing container, reads the published port and waits for the Web
 page to become ready. Connection attempts own cancellable CLI and readiness
 work; stale attempts cannot replace a newer window. Closing the app never stops
-the shared container. Direct management of WSL Python or a native MLX process
-is not yet implemented; macOS connects to an already running native MLX or remote GPU service;
-there is no Metal-in-Docker path. Desktop packages contain the shell, Electron
+the shared container. Installed desktop packages can still connect to an already
+running local or remote service; the source-managed backend requires the repository
+and its prepared Python environment. There is no Metal-in-Docker path. Desktop packages contain the shell, Electron
 runtime and pet display resources, not inference weights, Python, recordings,
 credentials or memory data.
 
