@@ -95,3 +95,42 @@ test('desktop preload exposes the same reduced window API as the new pet', async
   }
   assert.deepEqual(await exposed(path.join(__dirname, '../pet-preload.cjs')), await exposed(path.resolve(__dirname, '../../../pet/preload.cjs')));
 });
+
+test('distinct backchannels rotate pet actions 6, 7, and 8', async () => {
+  const actions = [];
+  let socket;
+  class WebSocket {
+    static OPEN = 1;
+    constructor() { socket = this; this.readyState = 1; }
+    close() {}
+  }
+  const math = Object.create(Math); math.random = () => 0;
+  const context = {
+    URLSearchParams, WebSocket, Math: math, performance: { now: () => 1000 },
+    setTimeout: () => 1, clearTimeout() {}, location: { search: '?ws=ws://test' },
+    window: { avatar: {
+      playAction: action => actions.push(action), wake() {}, sleep() {},
+      setState() {}, setSpeaking() {}, feedAudioLevel() {}, setEmotion() {},
+    } },
+  };
+  const link = await fs.readFile(path.resolve(__dirname, '../../../pet/voicemem-link.js'), 'utf8');
+  vm.runInNewContext(link, context);
+  socket.onopen();
+  for (let i = 1; i <= 3; i++) socket.onmessage({ data: JSON.stringify({
+    type: 'backchannel', session_id: 'session', event_id: `bc-${i}`,
+  }) });
+  assert.deepEqual(actions, [6, 7, 8]);
+});
+
+test('native body motions keep live audio control of mouth opening', () => {
+  const { Live2DRenderer } = require('../../../pet/live2d-renderer.js');
+  const renderer = new Live2DRenderer({ addEventListener() {} });
+  const applied = [];
+  renderer.model = { internalModel: { coreModel: {
+    setParameterValueById: (id, value) => applied.push([id, value]),
+  } } };
+  renderer.parameters = { ParamAngleX: 18, ParamMouthOpenY: .72 };
+  renderer.nativeMotion = true;
+  renderer.applyParameters();
+  assert.deepEqual(applied, [['ParamMouthOpenY', .72]]);
+});

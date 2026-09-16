@@ -21,8 +21,8 @@
       this.rms = level; this.lastTimestamp = Number(timestamp) || performance.now(); this.playing = true;
       if (level < this.noiseFloor * 1.8) this.noiseFloor += (level - this.noiseFloor) * .025;
       const gate = Math.max(.004, this.noiseFloor * 2.2);
-      const normalized = Math.max(0, level - gate) / Math.max(.025, .16 - gate);
-      this.target = clamp(Math.pow(normalized, .58));
+      const normalized = Math.max(0, level - gate) / Math.max(.02, .105 - gate);
+      this.target = normalized > 0 ? clamp(.12 + .88 * Math.sqrt(normalized)) : 0;
     }
     update(dt, now = performance.now()) {
       if (!this.playing || now - this.lastTimestamp > this.staleMs) this.target = 0;

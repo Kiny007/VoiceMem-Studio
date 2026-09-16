@@ -64,9 +64,12 @@
       } catch (error) { this.error = String(error?.message || error); this.destroyModel(); throw error; }
     }
     applyParameters() {
-      if (this.nativeMotion) return;
       const core = this.model?.internalModel?.coreModel; if (!core) return;
-      for (const [id, value] of Object.entries(this.parameters)) {
+      const entries = this.nativeMotion
+        ? [['ParamMouthOpenY', this.parameters.ParamMouthOpenY]]
+        : Object.entries(this.parameters);
+      for (const [id, value] of entries) {
+        if (!Number.isFinite(value)) continue;
         try { core.setParameterValueById(id, value); } catch {}
       }
     }

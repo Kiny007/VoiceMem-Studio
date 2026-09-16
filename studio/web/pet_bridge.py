@@ -129,6 +129,8 @@ class TeeSocket:
     async def send_json(self, data, *args, **kwargs):
         if isinstance(data, dict) and data.get("type") in self._TEE_OUT:
             event = {"type": data["type"], "session_id": self.session_id}
+            if data["type"] == "backchannel":
+                event["event_id"] = data.get("filler_id") or uuid.uuid4().hex
             if data.get("output_id"):
                 event["output_id"] = data["output_id"]
             if data.get("emotion"):

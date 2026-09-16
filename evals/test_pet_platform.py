@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from studio.web.pet_bridge import PetSupervisor, PetHub
+from studio.web.pet_bridge import PetSupervisor, PetHub, TeeSocket
 
 
 class PetPlatformTests(unittest.TestCase):
@@ -39,6 +39,20 @@ class PetObserverTests(unittest.IsolatedAsyncioTestCase):
         hub.add(observer)
         await hub.broadcast({'type': 'backchannel'})
         observer.send_text.assert_awaited_once_with('{"type": "backchannel"}')
+
+    async def test_each_backchannel_gets_a_unique_pet_event(self):
+        from unittest.mock import AsyncMock
+        sock, hub = MagicMock(), MagicMock()
+        sock.send_json = AsyncMock()
+        hub.broadcast = AsyncMock()
+        tee = TeeSocket(sock, hub, session_id='session')
+
+        await tee.send_json({'type': 'backchannel', 'token': '嗯'})
+        await tee.send_json({'type': 'backchannel', 'token': '嗯'})
+
+        first, second = [call.args[0] for call in hub.broadcast.await_args_list]
+        self.assertNotEqual(first['event_id'], second['event_id'])
+        self.assertEqual(first['session_id'], 'session')
 
 
 if __name__ == '__main__':

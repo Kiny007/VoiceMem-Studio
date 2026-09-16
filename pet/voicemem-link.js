@@ -14,7 +14,8 @@
   }
   const remember = message => {
     const key = [message.session_id || session, message.output_id || '-', message.type,
-      message.state || '-', message.rendered_samples ?? '-', message.emotion || '-'].join(':');
+      message.event_id || '-', message.state || '-', message.rendered_samples ?? '-',
+      message.active ?? '-', message.emotion || '-'].join(':');
     if (seen.has(key)) return false; seen.add(key);
     if (seen.size > 256) seen.delete(seen.values().next().value); return true;
   };
