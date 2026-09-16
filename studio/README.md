@@ -32,7 +32,7 @@ studio/
 Linux/NVIDIA 的完整 Docker 部署及 Mac 原生部署见 [部署说明](../docker/README.md)。
 Linux 在 `.env` 配置好 API Key 后可直接执行 `docker compose up -d --build`。
 
-Windows/macOS 可以使用内置桌宠的 [桌面 App](apps/README.md)，复用当前 Web 界面。
+Windows/macOS 可以使用内置桌宠的 [桌面 App](apps/README.md)，首页选择科技风或数字人；与浏览器共用双风格 UI。
 Windows 本机 CUDA 后端放在 WSL2，Mac 使用原生 MLX；Linux 只运行后端，不自动启动桌宠。
 自动启动能力与待验证内容见 [平台设计](apps/PLATFORMS.md)。
 
@@ -56,7 +56,8 @@ python -m studio --verbose
 ```
 
 直接使用 Python 入口且未覆盖配置时，Linux 自动选择 CUDA，Mac 自动选择 MLX。
-默认 DeepSeek、中文、
+交互终端未指定 `--llm` 时先选择回复 API；`--check`、显式 `--llm` 和非交互命令不询问。
+非交互默认 DeepSeek、中文、
 `studio-zh` 记忆空间和 `8787` 端口，CUDA 默认只使用 `cuda:0`。
 原来的 `python web/run.py` 仍使用同一入口。需要其他记忆空间时加 `--space 空间名`；
 直接使用 Python 入口时，省略 `--verbose` 可切换为精简终端日志。

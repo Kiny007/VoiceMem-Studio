@@ -35,7 +35,7 @@ flowchart LR
 
 ### Client plane
 
-Owned by `studio/web/voicemem.html` and the AudioWorklets:
+Owned by `studio/apps/ui/`, `studio/web/transport.py`, and the AudioWorklets:
 
 - microphone permission and browser audio graph;
 - browser acoustic echo cancellation;
@@ -83,7 +83,10 @@ moving model inference onto the event loop. GPU and Torch schedulers remain
 process-scoped. Speculative generation captures its memory instance and space
 before scheduling; cancellation also reaps pending route work.
 
-Startup defaults to DeepSeek reply, Breeze TTS, and the `studio-zh` Memory Space.
+Interactive startup without `--llm` asks for DeepSeek, Qwen, OpenAI, or an
+MLX-local reply model before loading inference. Explicit `--llm`, `--check`,
+realtime mode, and non-interactive commands never prompt. Non-interactive startup
+defaults to DeepSeek reply, Breeze TTS, and the `studio-zh` Memory Space.
 An explicit `--space` selects another existing or new space; stored language and
 memory data are preserved when the default selection changes.
 Qwen is selectable with `--llm qwen`: `qwen3.6-flash` uses the international
@@ -156,8 +159,24 @@ worker/epoch guards remain in VoiceMem because the memory package also uses them
 a backend deployment target, not a desktop release target. Windows runs capture,
 playback and the pet natively, while local CUDA inference belongs in WSL2 or its
 Docker backend. macOS uses native MLX or a remote service. Both clients share
-the same Web UI and observer contracts. The desktop client's main
-window loads the backend's existing Web page without a renderer fork. A local
+the same Web UI and observer contracts. The backend root serves the shared
+frontend from `studio/apps/ui/`, with assets under `/ui/`. Its first page reuses the original mode-selection homepage, with labeled
+image cards linking to the technical or digital-human visual style. Display
+settings live inside each style. `/legacy` retains the previous Studio renderer;
+`/classic` retains the older demo. The desktop opens this same root and keeps its
+connection configuration window hidden on a successful startup; connection errors
+reveal configuration. Desktop clients require the updated backend assets.
+
+`studio-client.js` owns one page-local WebSocket and AudioContext, reuses the
+existing capture and PCM AudioWorklets, and sends rendered-sample checkpoints,
+pause/resume, and filler completion on the existing protocol. UI replies and
+perception come from backend events. Confirmed input IDs deduplicate transcripts
+and merge continuations; interruption uses the backend's heard prefix. Changing
+style, conversation, language, or leaving the page closes its connection. Chat
+lists are page-local and reset on refresh; opening a previous list item starts a
+new backend context for subsequent input. The supplied brain illustration is a
+memory-domain navigation diagram, not a count or topology of stored memories.
+The panels show real per-turn recall results without demo records or rule replies. A local
 configuration page owns the restricted settings IPC; the Studio renderer has no
 preload bridge or Node integration. Both renderers use context isolation and
 sandboxing. Microphone requests are limited to main-frame audio from the selected

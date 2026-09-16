@@ -1,3 +1,29 @@
+# VoiceMem Studio App
+
+## 双风格 UI 与 API 选择
+
+后端启动时先在命令行选择 DeepSeek / Qwen / OpenAI / 本地 MLX；密钥继续从环境变量或忽略的 `.env` 读取。首页复用原版 `index.html`，保留标题及左右两张带名称、说明的风格卡片；分别进入 `technical.html` 科技风和 `digital.html` 数字人。语言、UI 字号和内容字号在进入后的「设置」中调整。
+
+Mac 在项目根目录启动后端：
+
+```bash
+./scripts/run_studio_mlx.sh
+```
+
+看到服务启动成功后，在另一个终端启动 App：
+
+```bash
+cd studio/apps
+npm start
+```
+
+也可打开 `http://localhost:8787`。指定 `--llm qwen` 等参数可跳过 API 菜单；`--check` 和非交互启动不询问，非交互默认 DeepSeek。选择 API 影响后端进程；桌面 App 连接已有进程，不会再次改变其模型。
+
+UI 源码在 `studio/apps/ui/`，由后端 `/ui/` 提供，App 和浏览器共用。请使用更新后的后端。原界面保留在 `/legacy`。
+两种风格的文字、ASR、回复、情绪和召回面板使用现有服务事件；脑图保留视觉导航示意，不代表真实节点数量。聊天列表暂存在当前页面，刷新重置；切换历史条目后的新输入会建立新后端会话。原始 `voicemem_qa` 项目保持原样。
+
+---
+
 # VoiceMem Studio 桌面 App
 
 主窗口直接加载 Studio 已有的 Web 页面，界面、语音协议、记忆面板与 Web 版一致。

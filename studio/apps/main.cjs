@@ -50,7 +50,7 @@ function lockNavigation(window, allowed) {
   window.webContents.on('will-attach-webview', event => event.preventDefault());
 }
 
-async function showLauncher() {
+async function showLauncher(visible = true) {
   if (launcher && !launcher.isDestroyed()) { launcher.show(); launcher.focus(); return launcher; }
   const window = new BrowserWindow({
     width: 1020, height: 730, minWidth: 800, minHeight: 620, title: 'VoiceMem Studio · 配置设置',
@@ -63,7 +63,7 @@ async function showLauncher() {
   window.webContents.session.setPermissionCheckHandler(() => false);
   window.on('closed', () => { if (launcher === window) launcher = undefined; cancelConnection(); });
   await window.loadURL(launcherUrl);
-  if (!window.isDestroyed()) window.show();
+  if (visible && !window.isDestroyed()) window.show();
   return window;
 }
 
@@ -101,8 +101,8 @@ async function openStudio(url, ownGeneration) {
   const studioSession = session.fromPartition(`persist:studio-${new URL(url).host}`);
   installPermissions(studioSession);
   const window = new BrowserWindow({
-    width: 1440, height: 920, minWidth: 1080, minHeight: 680, title: 'VoiceMem Studio',
-    backgroundColor: '#212121', icon, show: false,
+    width: 680, height: 430, minWidth: 480, minHeight: 380, title: 'VoiceMem Studio',
+    backgroundColor: '#f7f8fa', icon, show: false,
     webPreferences: { session: studioSession, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   let opened = false;
@@ -111,6 +111,19 @@ async function openStudio(url, ownGeneration) {
   pet?.close();
   previous?.destroy();
   lockNavigation(window, destination => runtime.sameOrigin(destination, url));
+  let choosingMode = true;
+  window.webContents.on('did-navigate', (_event, destination) => {
+    const pathname = new URL(destination).pathname;
+    const home = ['/', '/index.html', '/ui/', '/ui/index.html'].includes(pathname);
+    if (home === choosingMode) return;
+    choosingMode = home;
+    if (window.isFullScreen()) window.setFullScreen(false);
+    if (window.isMaximized()) window.unmaximize();
+    window.setMinimumSize(home ? 480 : 1080, home ? 380 : 680);
+    window.setSize(home ? 680 : 1440, home ? 430 : 920);
+    window.center();
+    if (home) pet?.close(); else void showPet();
+  });
   window.webContents.on('page-title-updated', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => {
     if (studio === window && !quitting) {
@@ -131,7 +144,6 @@ async function openStudio(url, ownGeneration) {
     window.show();
     publish('connected', '已连接。');
     if (launcher && !launcher.isDestroyed()) launcher.hide();
-    void showPet();
   } catch (error) {
     if (!window.isDestroyed()) window.destroy();
     throw new Error(`无法加载 Studio 页面：${error.message}`);
@@ -172,6 +184,7 @@ async function connect(value, persist = true) {
   } catch (error) {
     if (ownGeneration !== generation || control.signal.aborted) return;
     publish('error', error.message || '连接失败，请检查服务地址。');
+    void showLauncher();
   } finally {
     if (ownGeneration === generation) attempt = undefined;
   }
@@ -247,8 +260,8 @@ else {
       return true;
     });
     ipcMain.handle('studio-desktop:cancel', event => { assertLauncher(event); cancelConnection(); publish('idle', '已取消等待；已经启动的 Docker 服务不会被停止。'); });
-    await showLauncher();
-    if (configError) publish('error', configError);
+    await showLauncher(false);
+    if (configError) { publish('error', configError); void showLauncher(); }
     else void connect(current, false);
   }).catch(error => { dialog.showErrorBox('VoiceMem Studio 启动失败', error.message); app.quit(); });
 }

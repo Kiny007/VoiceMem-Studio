@@ -2,6 +2,28 @@
 import argparse
 import os
 import platform
+import sys
+
+
+def select_provider(backend, read=input):
+    """Choose a reply provider before loading models or opening memory."""
+    providers = [("deepseek", "DeepSeek"), ("qwen", "Qwen / DashScope"),
+                 ("openai", "OpenAI")]
+    if backend == "mlx":
+        providers.append(("local", "本地模型 / MLX"))
+    print("\n选择回复 API（密钥沿用环境变量或 .env）：", flush=True)
+    for index, (_, label) in enumerate(providers, 1):
+        print(f"  {index}. {label}", flush=True)
+    while True:
+        try:
+            value = read("请选择 [1]：").strip().lower() or "1"
+        except EOFError:
+            raise SystemExit("未选择 API；可使用 --llm deepseek 非交互启动。") from None
+        for index, (provider, _) in enumerate(providers, 1):
+            if value in (str(index), provider):
+                print(f"已选择：{provider}\n", flush=True)
+                return provider
+        print("请输入有效编号或 API 名称。", flush=True)
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="VoiceMem Studio")
@@ -20,7 +42,8 @@ def parse_args(argv=None):
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--llm", choices=("deepseek", "qwen", "openai", "local"), default="deepseek")
+    parser.add_argument("--llm", choices=("deepseek", "qwen", "openai", "local"),
+                        help="省略时在交互终端选择 API；非交互启动默认 deepseek")
     parser.add_argument("--memory_root", default="")
     parser.add_argument("--spec_min_chars", type=int, default=6)
     parser.add_argument("--gamble_ms", type=int, default=200)
@@ -30,6 +53,9 @@ def parse_args(argv=None):
     parser.add_argument("--no-file-log", action="store_true")
     parser.add_argument("--check", action="store_true", help="只检查环境、凭据和模型，不启动或下载")
     args = parser.parse_args(argv)
+    if args.llm is None:
+        args.llm = (select_provider(args.backend) if argv is None and sys.stdin.isatty()
+                    and not args.check and args.mode == "llm_tts" else "deepseek")
     args.device = args.device or ("cuda:0" if args.backend == "cuda" else "cpu")
     args.tts_device = args.tts_device or args.device
     if args.backend == "cuda" and args.llm == "local" and args.mode == "llm_tts":
