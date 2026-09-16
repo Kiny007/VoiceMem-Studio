@@ -186,7 +186,9 @@ origin and require user approval; remote connections require HTTPS, while HTTP
 is accepted only on loopback. Settings and browser state live in the desktop
 application-data directory, not in the backend's memory or credential files.
 
-The source desktop entry (`npm start`) owns an optional local backend lifecycle.
+The source desktop entry (`npm start`) first verifies its locked Electron, PixiJS,
+and Pixi Live2D files. Missing files trigger `npm ci --include=dev`; a complete
+installation performs no package-manager or network work. It then owns an optional local backend lifecycle.
 Before Electron starts it asks for the reply provider and reads the matching API
 key with masked terminal input. The key is inherited only by Electron and the
 backend process; it is not written to desktop settings or command arguments.

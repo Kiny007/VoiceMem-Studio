@@ -9,6 +9,9 @@ cd studio/apps
 npm start
 ```
 
+启动前会检查 Electron、PixiJS 和 Pixi Live2D。缺失时自动按 `package-lock.json` 执行
+`npm ci --include=dev` 下载锁定版本；依赖完整时跳过安装。首次运行需要能够访问 npm registry。
+
 终端先选择 DeepSeek、Qwen、OpenAI；Apple Silicon Mac 还可选择本地 MLX。随后输入对应 API Key，输入内容以 `*` 隐藏；直接回车会沿用当前环境变量或项目根目录的 `.env`。App 会自动启动 macOS MLX 或 Windows WSL2/CUDA 后端、等待模型就绪，然后直接进入风格选择页。API Key 只传给本次 App 和后端进程，不写入连接设置。
 
 首页复用原版 `index.html`，分别进入 `technical.html` 科技风和 `digital.html` 数字人。语言、UI 字号和内容字号在进入后的「设置」中调整。也可单独打开已运行后端的 `http://localhost:8787`。
@@ -39,9 +42,9 @@ npm ci
 npm start
 ```
 
-`npm start` 自动使用项目根目录已有的 Python 环境：macOS 为 `.venv`，Windows 为 WSL2 中的 `.venv-cuda`。启动时配置页保持隐藏，服务就绪后直接打开风格选择页。
+`npm start` 先补齐缺失的 Node 运行依赖，再自动使用项目根目录已有的 Python 环境：macOS 为 `.venv`，Windows 为 WSL2 中的 `.venv-cuda`。启动时配置页保持隐藏，服务就绪后直接打开风格选择页。
 服务仍在预热时最多等待三分钟；App 退出时会停止它本次启动的后端。
-它不会自动安装 Python、WSL、驱动或依赖；这些环境需要事先按部署文档准备好。
+它不会自动安装 Python、WSL、驱动或 Python/模型依赖；这些后端环境需要事先按部署文档准备好。
 通过菜单 **Studio → 配置设置**（`Ctrl/Cmd+,`）更改地址。第一次开始语音时会请求麦克风授权。
 
 ## App 内置桌宠
