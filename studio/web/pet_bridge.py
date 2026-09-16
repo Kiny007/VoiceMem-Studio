@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 PET_DIR = Path(__file__).resolve().parents[2] / "pet"
@@ -44,6 +45,9 @@ class PetSupervisor:
                 self._warn(f"命令 {command[0]} 不在 PATH 上，跳过桌面小人")
                 return
             argv = [*command, "--expanded", f"--ws={ws_url}"]
+            model = os.environ.get("STUDIO_PET_MODEL", "").strip()
+            if model:
+                argv.append(f"--model={model}")
             try:
 
                 self._process = subprocess.Popen(
@@ -104,11 +108,12 @@ class PetHub:
 class TeeSocket:
     """Forward browser output to pet observers without creating another conversation."""
 
-    _TEE_OUT = {"answer_interrupt", "backchannel"}
+    _TEE_OUT = {"answer_interrupt", "backchannel", "memory_hits", "tag_update"}
 
-    def __init__(self, sock, hub: PetHub):
+    def __init__(self, sock, hub: PetHub, session_id: str | None = None):
         self._sock = sock
         self._hub = hub
+        self.session_id = session_id or uuid.uuid4().hex
         self._voice_active = False
 
     def __getattr__(self, name):
@@ -118,12 +123,17 @@ class TeeSocket:
         """Notify pet observers on VAD transitions without forwarding microphone audio."""
         if active != self._voice_active:
             self._voice_active = active
-            await self._hub.broadcast({"type": "user_voice", "active": active})
+            await self._hub.broadcast({"type": "user_voice", "active": active,
+                                       "session_id": self.session_id})
 
     async def send_json(self, data, *args, **kwargs):
         if isinstance(data, dict) and data.get("type") in self._TEE_OUT:
-
-            await self._hub.broadcast({"type": data["type"]})
+            event = {"type": data["type"], "session_id": self.session_id}
+            if data.get("output_id"):
+                event["output_id"] = data["output_id"]
+            if data.get("emotion"):
+                event["emotion"] = data["emotion"]
+            await self._hub.broadcast(event)
         return await self._sock.send_json(data, *args, **kwargs)
 
     async def receive(self, *args, **kwargs):
@@ -137,7 +147,10 @@ class TeeSocket:
                 payload = json.loads(text)
             except (TypeError, ValueError):
                 payload = None
-            if isinstance(payload, dict) and payload.get("type") == "playback_checkpoint":
+            if isinstance(payload, dict) and payload.get("type") in {
+                "playback_checkpoint", "avatar_audio_level"
+            }:
+                payload.setdefault("session_id", self.session_id)
                 await self._hub.broadcast(payload)
         return message
 

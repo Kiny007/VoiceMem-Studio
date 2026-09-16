@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; media-src 'self' blob:"><title>雾铃</title><link rel="stylesheet" href="style.css"></head>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' https://cubism.live2d.com; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; media-src 'self' blob:"><title>雾铃</title><link rel="stylesheet" href="style.css"></head>
 <body data-mode="dot">
   <button id="dot" aria-label="唤醒雾铃" title="点击唤醒 · 拖动移动"></button>
   <main id="character" hidden>
@@ -13,6 +13,9 @@
     <div class="resize-corner" data-resize-corner="sw" title="拖动调整大小" aria-hidden="true"></div>
     <div class="resize-corner" data-resize-corner="se" title="拖动调整大小" aria-hidden="true"></div>
   </main>
-  <script src="scene.js"></script><script src="avatar-rig.js"></script><script src="renderer.js"></script>
-  <script src="voicemem-link.js"></script>
+  <script src="scene.js"></script>
+  <script src="avatar-parameter-controller.js"></script><script src="avatar-behavior-controller.js"></script>
+  <script src="audio-lip-sync.js"></script><script src="live2d-renderer.js"></script>
+  <script src="avatar-controller.js"></script>
+  <script src="debug-panel.js"></script><script src="renderer.js"></script><script src="voicemem-link.js"></script>
 </body></html>

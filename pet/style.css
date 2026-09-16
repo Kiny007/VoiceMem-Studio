@@ -23,6 +23,10 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent
 #live{z-index:3;display:block;cursor:grab;filter:drop-shadow(0 6px 8px #486a7655)}
 #live:active{cursor:grabbing}
 #bubble{position:absolute;z-index:5;top:12px;left:16px;right:16px;padding:10px 14px;border:1px solid #d3edf47a;border-radius:14px;background:var(--bubble);font-size:13px;line-height:1.6;color:#f8fdff;pointer-events:none}
+#avatar-debug{position:absolute;z-index:20;left:14px;right:14px;top:14px;display:flex;flex-wrap:wrap;justify-content:center;gap:5px;padding:8px;border:1px solid #bce8f699;border-radius:10px;background:#102a38d9}
+#avatar-debug button{padding:5px 8px;border:1px solid #bce8f688;border-radius:7px;background:#315468e8;color:#f4fdff;font:12px/1.2 "Microsoft YaHei",sans-serif;cursor:pointer}
+#avatar-debug button:hover{background:#47768d}
+body[data-mode="dot"] #avatar-debug{display:none}
 @keyframes curtain-left{0%,100%{transform:skewX(0) translateX(0) scaleX(1.002)}50%{transform:skewX(.28deg) translateX(2px) scaleX(1.008)}}
 @keyframes curtain-right{0%,100%{transform:skewX(0) translateX(0) scaleX(1.002)}50%{transform:skewX(-.45deg) translateX(-4px) scaleX(1.014)}}
 @media(prefers-reduced-motion:reduce){.curtain{animation:none!important}}

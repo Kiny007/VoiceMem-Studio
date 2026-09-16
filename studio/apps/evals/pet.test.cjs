@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const vm = require('node:vm');
-const { observerUrl, resourceAllowed, trustedSender } = require('../pet-policy.cjs');
+const { CUBISM_CORE, observerUrl, resourceAllowed, trustedSender } = require('../pet-policy.cjs');
 const { preparePet, sourceFiles } = require('../scripts/prepare-pet.cjs');
 
 test('pet observes only the selected service and bundled local assets', () => {
@@ -17,7 +17,7 @@ test('pet observes only the selected service and bundled local assets', () => {
   assert.equal(observerUrl('https://studio.example.com'), 'wss://studio.example.com/ws-pet');
   assert.equal(observerUrl('http://[::1]:8787'), 'ws://[::1]:8787/ws-pet');
   assert.throws(() => observerUrl('http://untrusted.example.com'));
-  for (const url of [asset('index.html'), asset('assets/avatar/calm.png'), ws]) assert.equal(resourceAllowed(url, root, ws), true);
+  for (const url of [asset('index.html'), asset('assets/live2d/hiyori/hiyori_pro_t11.moc3'), CUBISM_CORE, ws]) assert.equal(resourceAllowed(url, root, ws), true);
   for (const url of [asset('../launcher.html'), asset('../.pet-runtime-other/secret'), 'file:///etc/passwd', `${ws}?other=1`,
     'ws://localhost:8787/ws-pet', 'ws://127.0.0.1:8787/ws', 'https://studio.example.com/script.js']) {
     assert.equal(resourceAllowed(url, root, ws), false, url);
@@ -37,7 +37,7 @@ test('pet window controls reject another renderer, frame or document', () => {
   assert.equal(trustedSender(event, { ...window, isDestroyed: () => true }, page), false);
 });
 
-test('pet bundle reuses Canvas animation code and includes complete offline resources only', async t => {
+test('pet bundle includes the Live2D runtime, model and required licenses', async t => {
   const destination = await fs.mkdtemp(path.join(process.env.VOICEMEM_TEST_TMP || os.tmpdir(), 'studio-pet-test-'));
   t.after(() => fs.rm(destination, { recursive: true, force: true }));
   const inventory = await preparePet({ destination });
@@ -45,27 +45,26 @@ test('pet bundle reuses Canvas animation code and includes complete offline reso
   for (const file of sourceFiles) assert.deepEqual(await fs.readFile(path.join(destination, file)), await fs.readFile(path.join(source, file)), file);
   const html = await fs.readFile(path.join(destination, 'index.html'), 'utf8');
   for (const [, file] of html.matchAll(/(?:src|href)="([^"]+)"/g)) await fs.access(path.join(destination, file));
-  assert.equal(html.includes('node_modules/'), false);
-  assert.ok(html.includes("script-src 'self';"));
-  assert.equal(html.includes('unsafe-eval'), false);
-  for (const name of ['avatar-rig.js', 'style.css']) {
+  assert.ok(inventory.includes('node_modules/pixi.js/dist/browser/pixi.min.js'));
+  assert.ok(inventory.includes('node_modules/pixi-live2d-display/dist/cubism4.min.js'));
+  assert.ok(html.includes("script-src 'self' 'unsafe-eval' https://cubism.live2d.com;"));
+  for (const name of ['live2d-renderer.js', 'style.css']) {
     const content = await fs.readFile(path.join(destination, name), 'utf8');
     for (const [file] of content.matchAll(/assets\/[\w/.-]+\.png/g)) {
       assert.ok(inventory.includes(file), file);
       await fs.access(path.join(destination, file));
     }
   }
-  assert.equal(inventory.some(file => /models\/|vendor\/|checks|node_modules|package-lock|\.env/.test(file)), false);
-  assert.equal(inventory.filter(file => file.endsWith('.png')).length, 5);
+  assert.equal(inventory.some(file => /checks|package-lock|\.env/.test(file)), false);
+  assert.equal(inventory.filter(file => file.endsWith('.png')).length, 3);
   assert.ok(inventory.includes('THIRD_PARTY_NOTICES.md'));
-  const pkg = JSON.parse(await fs.readFile(path.join(__dirname, '../package.json'), 'utf8'));
-  for (const name of ['pixi.js', '@pixi/unsafe-eval', 'pixi-live2d-display']) assert.equal(pkg.devDependencies[name], undefined);
+  assert.ok(inventory.includes('assets/live2d/hiyori/README-LICENSE.txt'));
   await fs.writeFile(path.join(destination, 'unexpected-private-file'), 'synthetic fixture');
   await assert.rejects(preparePet({ destination }), /Unexpected files/);
   assert.equal(await fs.readFile(path.join(destination, 'unexpected-private-file'), 'utf8'), 'synthetic fixture');
 });
 
-test('old generated Live2D resources are backed up once and excluded from the Canvas payload', async t => {
+test('old generated pet resources are backed up once and excluded from the Live2D payload', async t => {
   const directory = await fs.mkdtemp(path.join(process.env.VOICEMEM_TEST_TMP || os.tmpdir(), 'studio-pet-migration-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const destination = path.join(directory, 'bundle');

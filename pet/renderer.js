@@ -5,10 +5,10 @@ let renderEpoch=0;
 async function render(mode) {
   const epoch=++renderEpoch;
   document.body.dataset.mode = mode; dot.hidden = mode !== 'dot'; character.hidden = mode === 'dot';
-  window.petRig.hide();bubble.hidden=true;
+  if(mode==='dot')window.avatar.hide();bubble.hidden=true;
   stage.hidden=mode==='dot';
   if(mode!=='dot') {
-    try {await window.petRig.show(mode);}
+    try {await window.avatar.show(mode);}
     catch {if(epoch===renderEpoch){bubble.textContent='模型暂时没有加载成功，请重新启动。';bubble.hidden=false;}}
   }
 }
@@ -16,7 +16,7 @@ api.onMode(render); api.initial().then(render);
 let gesture, suppressClick = false;
 for (const el of [dot,character]) {
   el.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || e.target.closest?.('#avatar-debug')) return;
     const corner = e.target.closest('[data-resize-corner]')?.dataset.resizeCorner;
     el.setPointerCapture(e.pointerId);
     gesture = { x:e.screenX,y:e.screenY,moved:false,resize:Boolean(corner) };

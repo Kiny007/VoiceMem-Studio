@@ -40,6 +40,7 @@ test('settings persist only connection fields and reject malformed data', async 
 
 test('Docker startup preserves compose overrides and uses the published port', async t => {
   const directory = await temporary(t);
+  const root = await fs.realpath(directory);
   for (const file of ['compose.yaml', 'pyproject.toml', 'compose.override.yaml']) await fs.writeFile(path.join(directory, file), 'fixture');
   const calls = [];
   const url = await r.startDocker(directory, { platform: 'linux', env: {}, run: async (file, args, options) => {
@@ -49,8 +50,8 @@ test('Docker startup preserves compose overrides and uses the published port', a
   assert.equal(url, 'http://127.0.0.1:8788');
   assert.equal(calls.length, 3);
   assert.deepEqual(calls[1].args.slice(-7), ['up', '-d', '--no-build', '--no-recreate', '--pull', 'never', 'studio']);
-  assert.ok(calls[1].args.includes(path.join(directory, 'compose.override.yaml')));
-  assert.equal(calls.every(call => call.file === 'docker' && call.cwd === directory), true);
+  assert.ok(calls[1].args.includes(path.join(root, 'compose.override.yaml')));
+  assert.equal(calls.every(call => call.file === 'docker' && call.cwd === root), true);
   assert.equal(calls.some(call => call.args.includes('down') || call.args.includes('build')), false);
 });
 

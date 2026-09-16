@@ -1770,6 +1770,14 @@ function reportPlaybackCheckpoint(m){
       state,event:m.type}));
   }catch(e){}
 }
+function reportAvatarAudioLevel(m){
+  if(!m.outputId||!ws||ws.readyState!==WebSocket.OPEN) return;
+  try{
+    ws.send(JSON.stringify({type:'avatar_audio_level',output_id:m.outputId,
+      rms:Number(m.rms||0),peak:Number(m.peak||0),
+      rendered_samples:Number(m.renderedSamples||0),sample_rate:Number(m.sampleRate||SAMPLE_RATE)}));
+  }catch(e){}
+}
 function beginPcmOutput(outputId,sampleRate=SAMPLE_RATE){
   pcmOutputId=String(outputId||'');
   pcmOutputSampleRate=Number(sampleRate||SAMPLE_RATE);
@@ -1784,6 +1792,7 @@ function initPcmPlayer(){
     pcmNode.connect(replyBus);
     pcmNode.port.onmessage=e=>{
       const m=e.data||{};
+      if(m.type==='level'){ reportAvatarAudioLevel(m); return; }
       reportPlaybackCheckpoint(m);
       if(m.type==='started') setSpokenCaptionPlaying(true);
       else if(m.type==='drained'){

@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const state = require('../../../pet/state.cjs');
+const [PET_WIDTH, PET_HEIGHT] = state.SIZES.sit;
 
 async function fixture(desktop, saved) {
   const windows = [], timers = new Map(), handles = new Map(), ipcMain = new EventEmitter();
@@ -74,30 +75,30 @@ async function fixture(desktop, saved) {
 
 test('pet scale keeps the dot fixed, clamps input and preserves aspect ratio on a small display', () => {
   assert.deepEqual(state.scaledSize('dot', .4), [52, 52]);
-  assert.deepEqual(state.scaledSize('sit', .4), [264, 172]);
+  assert.deepEqual(state.scaledSize('sit', .4), [192, 256]);
   for (const invalid of [undefined, NaN, Infinity, '0.5']) assert.equal(state.clampScale(invalid), 1);
   assert.equal(state.clampScale(-4), .4);
   assert.equal(state.clampScale(4), 1.5);
-  assert.equal(state.draggedScale(1, -330, -215), .5);
-  assert.equal(state.draggedScale(1, 10, 215), 1.5);
-  const bounds = state.fitBounds({ x: 5000, y: -5000 }, [990, 645], { x: -400, y: -300, width: 300, height: 200 });
-  assert.deepEqual(bounds, { x: -400, y: -300, width: 300, height: 195 });
+  assert.equal(state.draggedScale(1, -PET_WIDTH / 2, -PET_HEIGHT / 2), .5);
+  assert.equal(state.draggedScale(1, 10, PET_HEIGHT / 2), 1.5);
+  const bounds = state.fitBounds({ x: 5000, y: -5000 }, state.scaledSize('sit', 1.5), { x: -400, y: -300, width: 300, height: 200 });
+  assert.deepEqual(bounds, { x: -250, y: -300, width: 150, height: 200 });
 });
 
 for (const desktop of [true, false]) {
   const label = desktop ? 'App pet' : 'standalone pet';
   test(`${label}: all four corners grow and shrink while the opposite corner stays fixed`, async () => {
     for (const [corner, sx, sy] of [['nw', -1, -1], ['ne', 1, -1], ['sw', -1, 1], ['se', 1, 1]]) {
-      const f = await fixture(desktop, { x: 1000, y: 700 });
+      const f = await fixture(desktop, { x: 1000, y: 820 });
       const original = f.window().getBounds();
       const fixed = { x: original.x + (sx < 0 ? original.width : 0), y: original.y + (sy < 0 ? original.height : 0) };
       const cursor = { x: original.x + (sx > 0 ? original.width : 0), y: original.y + (sy > 0 ? original.height : 0) };
       f.point(cursor); f.send('resize-start', corner);
       for (const delta of [-.3, .2]) {
-        f.point({ x: cursor.x + sx * 660 * delta, y: cursor.y + sy * 430 * delta }); f.send('resize-move');
+        f.point({ x: cursor.x + sx * PET_WIDTH * delta, y: cursor.y + sy * PET_HEIGHT * delta }); f.send('resize-move');
         const bounds = f.window().getBounds();
-        assert.equal(bounds.width, Math.round(660 * (1 + delta)), corner);
-        assert.equal(bounds.height, Math.round(430 * (1 + delta)), corner);
+        assert.equal(bounds.width, Math.round(PET_WIDTH * (1 + delta)), corner);
+        assert.equal(bounds.height, Math.round(PET_HEIGHT * (1 + delta)), corner);
         assert.equal(bounds.x + (sx < 0 ? bounds.width : 0), fixed.x, corner);
         assert.equal(bounds.y + (sy < 0 ? bounds.height : 0), fixed.y, corner);
       }
@@ -110,24 +111,24 @@ for (const desktop of [true, false]) {
   test(`${label}: scale controls survive collapse and restart without restarting pose animations`, async () => {
     const f = await fixture(desktop, { x: 1000, y: 700, scale: .6 });
     assert.equal(f.initial('initial-scale'), .6);
-    assert.equal(f.window().bounds.width, 396);
+    assert.equal(f.window().bounds.width, 288);
     f.send('resize', 1);
-    assert.equal(f.window().bounds.width, 462);
+    assert.equal(f.window().bounds.width, 336);
     assert.equal(f.window().messages.filter(([channel]) => channel.endsWith('mode')).length, 0);
     f.send('collapse');
     assert.equal(f.window().bounds.width, 52);
     for (const pose of ['sit', 'lie', undefined]) f.send('activate', pose);
     assert.equal(f.window().bounds.width, 52);
     f.send('toggle');
-    assert.equal(f.window().bounds.width, 462);
+    assert.equal(f.window().bounds.width, 336);
     f.send('activate', 'sit');
     assert.equal(f.initial(desktop ? 'initial' : 'initial-mode'), 'sit');
     await f.flush();
     assert.equal(f.saved().scale, .7);
     const restored = await fixture(desktop, f.saved());
-    assert.equal(restored.window().bounds.width, 462);
+    assert.equal(restored.window().bounds.width, 336);
     restored.send('reset-size');
-    assert.equal(restored.window().bounds.width, 660);
+    assert.equal(restored.window().bounds.width, 480);
     for (let i = 0; i < 30; i++) restored.send('resize', -1);
     assert.equal(restored.initial('initial-scale'), .4);
     for (let i = 0; i < 30; i++) restored.send('resize', 1);
@@ -145,16 +146,16 @@ for (const desktop of [true, false]) {
     f.send('pointer', false);
     assert.equal(f.window().ignoresMouse, false);
     f.send('activate', 'sit');
-    f.point({ x: moved.x + moved.width - 330, y: moved.y + moved.height - 215 }); f.send('resize-move'); f.send('resize-end');
-    assert.deepEqual(f.window().bounds, { x: moved.x, y: moved.y, width: 330, height: 215 });
+    f.point({ x: moved.x + moved.width - PET_WIDTH / 2, y: moved.y + moved.height - PET_HEIGHT / 2 }); f.send('resize-move'); f.send('resize-end');
+    assert.deepEqual(f.window().bounds, { x: moved.x, y: moved.y, width: 240, height: 320 });
     await f.flush();
-    assert.deepEqual(f.saved(), { x: moved.x + 330, y: moved.y + 215, scale: .5 });
+    assert.deepEqual(f.saved(), { x: moved.x + 240, y: moved.y + 320, scale: .5 });
     f.send('pointer', false);
     assert.equal(f.window().ignoresMouse, true);
     f.send('collapse'); f.send('resize-start'); f.send('resize-move');
     assert.equal(f.window().bounds.width, 52);
     f.send('toggle');
-    assert.equal(f.window().bounds.width, 330);
+    assert.equal(f.window().bounds.width, 240);
   });
 }
 
@@ -177,9 +178,9 @@ test('App pet rejects untrusted resize IPC and stale gestures after closing or c
   assert.equal(old.isDestroyed(), true);
   assert.equal(f.hidden(), 0);
   await f.controller.open('http://127.0.0.1:9898');
-  assert.equal(f.window().bounds.width, 594);
+  assert.equal(f.window().bounds.width, 432);
   f.send('resize', -1, stale); f.send('resize-move');
-  assert.equal(f.window().bounds.width, 594);
+  assert.equal(f.window().bounds.width, 432);
   f.window().destroy();
   assert.equal(f.hidden(), 1);
 });

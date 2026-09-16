@@ -3,9 +3,21 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const sourceFiles = [
-  'style.css', 'state.cjs', 'renderer.js', 'avatar-rig.js', 'scene.js', 'voicemem-link.js',
-  'assets/avatar/calm.png', 'assets/avatar/talk.png', 'assets/avatar/blink.png',
-  'assets/avatar/squint-smile.png', 'assets/scene/curtains.png', 'THIRD_PARTY_NOTICES.md',
+  'style.css', 'state.cjs', 'renderer.js', 'scene.js', 'voicemem-link.js',
+  'audio-lip-sync.js', 'avatar-behavior-controller.js', 'avatar-controller.js',
+  'avatar-parameter-controller.js', 'debug-panel.js', 'live2d-renderer.js',
+  'assets/scene/curtains.png', 'assets/live2d/README.md',
+  'assets/live2d/hiyori/README-LICENSE.txt',
+  'assets/live2d/hiyori/hiyori_pro_t11.moc3',
+  ...['model3.json', 'physics3.json', 'pose3.json', 'cdi3.json']
+    .map(suffix => `assets/live2d/hiyori/hiyori_pro_t11.${suffix}`),
+  ...['texture_00.png', 'texture_01.png']
+    .map(file => `assets/live2d/hiyori/hiyori_pro_t11.2048/${file}`),
+  ...Array.from({ length: 10 }, (_, index) =>
+    `assets/live2d/hiyori/motion/hiyori_m${String(index + 1).padStart(2, '0')}.motion3.json`),
+  'node_modules/pixi.js/dist/browser/pixi.min.js', 'node_modules/pixi.js/LICENSE',
+  'node_modules/pixi-live2d-display/dist/cubism4.min.js', 'node_modules/pixi-live2d-display/LICENSE',
+  'THIRD_PARTY_NOTICES.md',
 ];
 
 // Recognize the previous generated layout only to preserve it during migration.

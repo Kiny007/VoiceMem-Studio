@@ -1,4 +1,4 @@
-const SIZES = { dot: [52, 52], sit: [660, 430], lie: [660, 430] };
+const SIZES = { dot: [52, 52], sit: [480, 640], lie: [480, 640] };
 const MIN_SCALE = 0.4, MAX_SCALE = 1.5;
 const RESIZE_CORNERS = { nw: [-1, -1], ne: [1, -1], sw: [-1, 1], se: [1, 1] };
 function clampScale(value) {
