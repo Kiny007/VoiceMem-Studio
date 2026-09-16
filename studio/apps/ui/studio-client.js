@@ -138,7 +138,12 @@
         owner.player.port.onmessage = ({ data }) => {
           if (!active(owner)) return;
           const states = { buffer: 'playing', started: 'playing', resumed: 'playing', underflow: 'stalled' };
-          if (data.outputId) sendJSON(owner, {
+          if (data.type === 'level' && data.outputId) sendJSON(owner, {
+            type: 'avatar_audio_level', output_id: data.outputId,
+            rms: Number(data.rms || 0), peak: Number(data.peak || 0),
+            rendered_samples: Number(data.renderedSamples || 0), sample_rate: Number(data.sampleRate || RATE),
+          });
+          else if (data.outputId) sendJSON(owner, {
             type: 'playback_checkpoint', output_id: data.outputId,
             rendered_samples: Number(data.renderedSamples || 0), sample_rate: Number(data.sampleRate || RATE),
             buffered_samples: Math.round(Number(data.bufferedMs || 0) * Number(data.sampleRate || RATE) / 1000),

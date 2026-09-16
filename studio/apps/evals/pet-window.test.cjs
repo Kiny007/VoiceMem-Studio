@@ -73,6 +73,13 @@ async function fixture(desktop, saved) {
   };
 }
 
+test('App pet loads the bundled Live2D model in portrait layout', async () => {
+  const f = await fixture(true);
+  const url = new URL(f.window().webContents.mainFrame.url);
+  assert.equal(url.searchParams.get('layout'), 'portrait');
+  assert.equal(url.searchParams.get('ws'), 'ws://127.0.0.1:8787/ws-pet');
+});
+
 test('pet scale keeps the dot fixed, clamps input and preserves aspect ratio on a small display', () => {
   assert.deepEqual(state.scaledSize('dot', .4), [52, 52]);
   assert.deepEqual(state.scaledSize('sit', .4), [192, 256]);

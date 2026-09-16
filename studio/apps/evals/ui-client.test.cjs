@@ -76,6 +76,15 @@ test('pause/resume, drain, checkpoints and stale outputs retain output identity'
   assert.equal(socket.sent.at(-1).rendered_samples, 24000); assert.equal(socket.sent.at(-1).state, 'drained');
   assert.equal(f.events.at(-1).type, 'playback_done'); f.client.cancel();
 });
+test('played audio levels drive the App-owned Live2D pet without becoming checkpoints', async () => {
+  const f = fixture(); await f.connected(); const socket = f.sockets[0], player = f.nodes[0];
+  socket.receive({type:'answer_start',output_id:'one',sample_rate:24000});
+  player.port.onmessage({data:{type:'level',outputId:'one',rms:.25,peak:.7,renderedSamples:1200,sampleRate:24000}});
+  assert.deepEqual(socket.sent.at(-1), {
+    type:'avatar_audio_level',output_id:'one',rms:.25,peak:.7,rendered_samples:1200,sample_rate:24000,
+  });
+  assert.equal(socket.sent.at(-1).state, undefined); f.client.cancel();
+});
 test('interrupt clears queued audio and preserves the server heard prefix', async () => {
   const f = fixture(); await f.connected();
   f.sockets[0].receive({type:'answer_start',output_id:'one'});

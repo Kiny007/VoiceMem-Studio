@@ -33,10 +33,7 @@ UI 源码在 `studio/apps/ui/`，由后端 `/ui/` 提供，App 和浏览器共�
 
 ## 桌面方案
 
-[DeepSeek 官方 Desktop](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md)
-也使用 Electron 复用 Web UI，内置 Node 后端，通过管道、IPC 和自定义协议连接，不开放 Web 监听端口。
-本项目采用相同的“桌面壳复用 Web UI”边界，但保留已有 Python/CUDA Docker 和原生 MLX 后端，
-通过原有 HTTP/WebSocket 协议连接，不迁移后端通信协议。
+本项目通过原有 HTTP/WebSocket 协议连接，不迁移后端通信协议。
 平台分工、配置边界、目标启动流程和实现状态见 [平台设计](PLATFORMS.md)。
 
 ## 直接运行
@@ -54,7 +51,7 @@ npm start
 
 ## App 内置桌宠
 
-连接成功后默认显示雾铃，作为同一个 App 的透明置顶窗口，不再单独启动 Electron 或安装 `pet` 依赖。
+连接成功后默认显示雾铃，作为同一个 App 的透明置顶窗口，不再单独启动 Electron 或安装 `pet` 目录的依赖；App 自己的开发依赖包含打包所需的 Pixi 运行库。
 菜单 **Studio → 显示桌宠** 控制本次运行中的显示/隐藏，不退出主窗口。
 **找回桌宠位置** 将它移回主屏幕。按住人物或背景拖动窗口，
 拖动任意一个角等比例缩放（40%–150%）。界面没有顶部控制条；也可使用 **Studio → 桌宠大小** 恢复原始大小。
@@ -64,11 +61,11 @@ npm start
 - 原版 `pet/` 的渲染、动画与 `voicemem-link.js` 保留为唯一来源，不修改它的独立启动方式。
 - 桌宠通过当前后端的 `/ws-pet` 只读观察真实播放进度、附和、打断和断线，不采集麦克风、不创建第二段对话。
 - 切换服务会关闭旧桌宠连接；关闭 Studio 主窗口或退出 App 会关闭内置桌宠，Docker 后端继续运行。
-- 打包包含原版 `avatar-rig.js`、`scene.js`、四张人物图片及窗帘背景；使用 Canvas，不依赖 Pixi、Cubism、WASM 或 CDN。
-- 保留 `sit` / `lie` 作为交互/休息状态，尺寸由原版 `state.cjs` 决定；附和触发歪头笑，嘴型仍跟随实际播放。
+- 打包包含 Cubism 4 Live2D 模型、Pixi 运行库、原生动作、`scene.js` 和窗帘背景，不再包含旧的 Canvas/PNG 人物。
+- 保留 `sit` / `lie` 作为交互/休息状态，使用 3:4 竖屏构图；双模式页面把实际播放音量发送到 `/ws-pet`，由 RMS 驱动嘴型。
 - 源码运行和打包自动执行 `prepare:pet`，按白名单生成忽略于 Git 的 `.pet-runtime/`。
   不打包 `pet/checks`、旧模型、旧第三方运行库或第二份 Electron。
-- 检测到旧 Live2D 构建缓存时，先移到 `.pet-runtime.previous-*/resources/` 再生成新资源；备份不进入 Git 或安装包。
+- 检测到旧 Canvas 或 Live2D 构建缓存时，先移到 `.pet-runtime.previous-*/resources/` 再生成新资源；备份不进入 Git 或安装包。
   不认识的额外文件会使准备步骤报错，不会被删除或意外打包。
 
 Linux/WSL 后端不会自动启动桌宠，Docker 也保留 `STUDIO_DESKTOP_PET=0`。
@@ -140,7 +137,7 @@ npm test
 
 Linux 可用 `node scripts/smoke.cjs` 在 Xvfb 中验证真实窗口。它只使用临时假后端和假 Docker，
 不调用真实容器、不打开个人记忆、不采集麦克风；截图留在其输出的临时目录。
-它加载实际 Canvas 人物和场景，用合成的 `/ws-pet` 事件验证嘴型、附和歪头笑、打断、暂停/断线、服务切换及隐藏窗口。
+它加载实际 Live2D 人物和场景，用合成的 `/ws-pet` 事件验证嘴型、原生动作、打断、暂停/断线、服务切换及隐藏窗口。
 `node scripts/smoke.cjs --asar` 先按打包白名单生成临时 ASAR，再验证归档内的共享客户端和资源；不生成 Linux 安装包。
 `--keep-pet-on-exit` 额外验证关闭主窗口时仍显示的桌宠一起退出。
 可以用 `VOICEMEM_DESKTOP_BINARY` 指向已打包的程序，`VOICEMEM_XVFB` 指定 Xvfb。

@@ -169,7 +169,9 @@ reveal configuration. Desktop clients require the updated backend assets.
 
 `studio-client.js` owns one page-local WebSocket and AudioContext, reuses the
 existing capture and PCM AudioWorklets, and sends rendered-sample checkpoints,
-pause/resume, and filler completion on the existing protocol. UI replies and
+actual playback RMS levels, pause/resume, and filler completion on the existing
+protocol. The RMS event feeds the App-owned Live2D pet and is not treated as a
+playback checkpoint. UI replies and
 perception come from backend events. Confirmed input IDs deduplicate transcripts
 and merge continuations; interruption uses the backend's heard prefix. Changing
 style, conversation, language, or leaving the page closes its connection. Chat
@@ -200,14 +202,15 @@ credentials or memory data.
 
 The desktop app also owns one optional transparent pet window in the same
 Electron application. Packaging selects the existing `pet/` renderer, animation,
-observer and Canvas/PNG resources without forking them or bundling another Electron.
-The renderer and scene require no Pixi, Cubism or WASM runtime. Only the generated
-HTML connection CSP is adapted for the desktop package. Resource preparation
-backs up recognized legacy build output before migration, excludes backups from
-the package, and rejects unknown files. Its isolated preload exposes window controls,
+observer, Cubism 4 model, native motions and Pixi runtime without forking them or
+bundling another Electron. The generated HTML connection CSP is adapted for the
+desktop package, and the pet session permits the Cubism Core source plus the
+selected observer. Resource preparation backs up recognized Canvas and older
+Live2D build output before migration, excludes backups from the package, and
+rejects unknown files. Its isolated preload exposes window controls,
 not Docker or settings APIs; IPC validates the pet's exact main frame and document.
-The pet session permits only bundled resources and the selected `/ws-pet` endpoint,
-denies device permissions, and does not start a conversation. Service changes close
+The pet session permits bundled resources, the Cubism Core source and the selected
+`/ws-pet` endpoint, denies device permissions, and does not start a conversation. Service changes close
 the old observer before opening the new one; closing the Studio window closes the
 pet. Position and a 40–150% expanded-window scale live in desktop app data; older
 position-only files default to 100%. The shared renderer has no toolbar: dragging
@@ -828,13 +831,12 @@ Linux/WSL skips process startup while retaining all pet broadcast routes.
 Opening the browser page is not required to launch the pet.
 The optional desktop pet observes the existing pet WebSocket without starting
 another conversation. Its renderer follows output-identified playback checkpoints
-for mouth movement and uses interruption/disconnect handling plus a bounded
-watchdog to close the mouth. Backchannel notifications drive tilts; completed
-playback can select one random tilt. Linked mode disables timer-driven tilts,
-and pending actions wait for the required pose to finish loading. The pet starts
+for lifecycle and actual playback RMS for Live2D mouth movement. Pause,
+interruption, drain and disconnect close the mouth. Backchannel, ordinary reply
+and sadness events select separate pools of native model motions. The pet starts
 in the `lie` resting state. Conversation startup and detected user voice select
-the `sit` interaction state; a local silence timer returns it to rest. These states
-share the Canvas avatar and scene rather than separate Live2D poses. VAD transitions come from the
+the `sit` interaction state; a local silence timer returns it to rest. Both states
+share one Live2D model and scene. VAD transitions come from the
 existing capture state or realtime provider, not raw microphone packet arrival.
 Conversation closure clears active voice state; resting suppresses random gestures.
 

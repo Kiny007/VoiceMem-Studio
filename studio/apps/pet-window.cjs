@@ -123,6 +123,7 @@ function createPet({ onHidden = () => {} } = {}) {
     manuallyCollapsed = false;
     const url = pathToFileURL(path.join(root, 'index.html'));
     url.searchParams.set('ws', observer);
+    url.searchParams.set('layout', 'portrait');
     page = url.href;
     const created = new BrowserWindow({
       ...fitBounds(anchor, scaledSize(mode, scale), screen.getDisplayNearestPoint(anchor).workArea),

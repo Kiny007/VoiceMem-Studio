@@ -42,7 +42,10 @@ test('pet bundle includes the Live2D runtime, model and required licenses', asyn
   t.after(() => fs.rm(destination, { recursive: true, force: true }));
   const inventory = await preparePet({ destination });
   const source = path.resolve(__dirname, '../../../pet');
-  for (const file of sourceFiles) assert.deepEqual(await fs.readFile(path.join(destination, file)), await fs.readFile(path.join(source, file)), file);
+  for (const file of sourceFiles) {
+    const original = path.join(file.startsWith('node_modules/') ? path.resolve(__dirname, '..') : source, file);
+    assert.deepEqual(await fs.readFile(path.join(destination, file)), await fs.readFile(original), file);
+  }
   const html = await fs.readFile(path.join(destination, 'index.html'), 'utf8');
   for (const [, file] of html.matchAll(/(?:src|href)="([^"]+)"/g)) await fs.access(path.join(destination, file));
   assert.ok(inventory.includes('node_modules/pixi.js/dist/browser/pixi.min.js'));
@@ -64,19 +67,19 @@ test('pet bundle includes the Live2D runtime, model and required licenses', asyn
   assert.equal(await fs.readFile(path.join(destination, 'unexpected-private-file'), 'utf8'), 'synthetic fixture');
 });
 
-test('old generated pet resources are backed up once and excluded from the Live2D payload', async t => {
+test('old Canvas pet resources are backed up once and excluded from the Live2D payload', async t => {
   const directory = await fs.mkdtemp(path.join(process.env.VOICEMEM_TEST_TMP || os.tmpdir(), 'studio-pet-migration-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const destination = path.join(directory, 'bundle');
-  await fs.mkdir(path.join(destination, 'vendor'), { recursive: true });
-  await fs.writeFile(path.join(destination, 'rig.js'), 'old fixture');
-  await fs.writeFile(path.join(destination, 'vendor/pixi.min.js'), 'old vendor fixture');
+  await fs.mkdir(path.join(destination, 'assets/avatar'), { recursive: true });
+  await fs.writeFile(path.join(destination, 'avatar-rig.js'), 'old Canvas fixture');
+  await fs.writeFile(path.join(destination, 'assets/avatar/calm.png'), 'old image fixture');
   await preparePet({ destination });
   const backups = (await fs.readdir(directory)).filter(file => file.startsWith('bundle.previous-'));
   assert.equal(backups.length, 1);
-  assert.equal(await fs.readFile(path.join(directory, backups[0], 'resources/rig.js'), 'utf8'), 'old fixture');
-  await assert.rejects(fs.access(path.join(destination, 'rig.js')), { code: 'ENOENT' });
-  await assert.rejects(fs.access(path.join(destination, 'vendor')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(directory, backups[0], 'resources/avatar-rig.js'), 'utf8'), 'old Canvas fixture');
+  await assert.rejects(fs.access(path.join(destination, 'avatar-rig.js')), { code: 'ENOENT' });
+  await assert.rejects(fs.access(path.join(destination, 'assets/avatar')), { code: 'ENOENT' });
   await preparePet({ destination });
   assert.deepEqual((await fs.readdir(directory)).filter(file => file.startsWith('bundle.previous-')), backups);
 });

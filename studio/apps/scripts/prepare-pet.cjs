@@ -22,6 +22,11 @@ const sourceFiles = [
 
 // Recognize the previous generated layout only to preserve it during migration.
 const legacyFiles = [
+  // Canvas/PNG pet bundled by the immediately preceding App release.
+  'style.css', 'state.cjs', 'renderer.js', 'scene.js', 'voicemem-link.js', 'avatar-rig.js',
+  'assets/avatar/calm.png', 'assets/avatar/talk.png', 'assets/avatar/blink.png',
+  'assets/avatar/squint-smile.png', 'assets/scene/curtains.png', 'THIRD_PARTY_NOTICES.md',
+  // Older generated Live2D payload retained for safe one-time migration.
   'style.css', 'state.cjs', 'renderer.js', 'rig.js', 'voicemem-link.js',
   'tilted-smile.js', 'transparency.js', 'face-calibration.js', 'motion-calibration.js',
   'assets/sit.png', 'assets/lie.png', 'vendor/live2dcubismcore.min.js', 'THIRD_PARTY_NOTICES.md',
@@ -59,9 +64,10 @@ async function listFiles(directory) {
 
 async function preparePet({ apps = path.resolve(__dirname, '..'), destination = path.join(apps, '.pet-runtime') } = {}) {
   const source = path.resolve(apps, '../../pet');
+  const sourceOf = file => path.join(file.startsWith('node_modules/') ? apps : source, file);
   const inventory = ['index.html', ...sourceFiles];
   const html = desktopHtml(await fs.readFile(path.join(source, 'index.html'), 'utf8'));
-  for (const file of sourceFiles) await fs.access(path.join(source, file));
+  for (const file of sourceFiles) await fs.access(sourceOf(file));
   let actual;
   try { actual = await listFiles(destination); }
   catch (error) { if (error.code !== 'ENOENT') throw error; actual = []; }
@@ -75,7 +81,7 @@ async function preparePet({ apps = path.resolve(__dirname, '..'), destination = 
   await fs.mkdir(destination, { recursive: true });
   for (const file of sourceFiles) {
     await fs.mkdir(path.dirname(path.join(destination, file)), { recursive: true });
-    await fs.copyFile(path.join(source, file), path.join(destination, file));
+    await fs.copyFile(sourceOf(file), path.join(destination, file));
   }
   await fs.writeFile(path.join(destination, 'index.html'), html);
   if ((await listFiles(destination)).sort().join('\n') !== [...inventory].sort().join('\n')) throw new Error('Pet resource inventory mismatch.');
