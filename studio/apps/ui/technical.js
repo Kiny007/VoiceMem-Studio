@@ -68,7 +68,7 @@ function messageNode(m) {
   const foot = m.role === 'ai' ? `
     <div class="msg-foot">
       <button title="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
-      <button title="朗读"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg></button>
+      <button title="重播原声"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg></button>
       
     </div>` : '';
   wrap.innerHTML = `${avatar}<div>
@@ -78,7 +78,15 @@ function messageNode(m) {
     </div>`;
   const buttons=wrap.querySelectorAll('.msg-foot button');
   if(buttons[0]) {buttons[0].setAttribute('aria-label','复制回复');buttons[0].onclick=()=>VMUI.copy(m.text);}
-  if(buttons[1]) {buttons[1].setAttribute('aria-label','朗读回复');buttons[1].onclick=()=>{const version=flowVersion;VMUI.read(m.text,buttons[1],on=>{if(version===flowVersion)orbState(on?'speaking':'idle');});};}
+  if(buttons[1]) {
+    const replayState=on=>{m.replaying=on;buttons[1].setAttribute('aria-pressed',String(on));buttons[1].title=on?'停止重播':'重播原声';buttons[1].setAttribute('aria-label',on?'停止重播':'重播原声回复');};
+    replayState(!!m.replaying);
+    buttons[1].onclick=()=>{
+      if(CONVERSATIONS.find(c=>c.id===activeConv)?.busy){VMUI.notify('请等当前回复完成。');return;}
+      const version=flowVersion;
+      void voice.replay(m.outputId,on=>{replayState(on);if(version===flowVersion)orbState(on?'speaking':'idle');});
+    };
+  }
   const chip=wrap.querySelector('.chip');
   if(chip) chip.onclick=()=>{
     const memory=[...MEMORIES.facts,...MEMORIES.traits].find(x=>m.grounded.startsWith(x.id));
@@ -115,7 +123,6 @@ function syncConversation() {
   flowVersion++;clearTimeout(thoughtTimer);orbState('idle');
   voice.cancel();
   replyMessage = null; perception = {}; MEMORIES.facts = []; MEMORIES.traits = [];
-  window.speechSynthesis?.cancel();
   clearInterval(typing);
   activeDomain = null;
   const conv = CONVERSATIONS.find(c => c.id === activeConv);
@@ -319,7 +326,7 @@ syncConversation();
 switchTab('space');
 if(matchMedia('(max-width:700px)').matches) setSidebar(true);
 
-document.addEventListener('settings-open',()=>{voice.cancel();window.speechSynthesis?.cancel();window.liquidOrb?.stopVoiceDemo();});
+document.addEventListener('settings-open',()=>{voice.cancel();window.liquidOrb?.stopVoiceDemo();});
 window.addEventListener('pagehide',()=>{clearInterval(typing);clearTimeout(thoughtTimer);orbState('idle');});
 window.addEventListener('pageshow',e=>{if(e.persisted)syncConversation();});
 

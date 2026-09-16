@@ -171,7 +171,11 @@ reveal configuration. Desktop clients require the updated backend assets.
 existing capture and PCM AudioWorklets, and sends rendered-sample checkpoints,
 actual playback RMS levels, pause/resume, and filler completion on the existing
 protocol. The RMS event feeds the App-owned Live2D pet and is not treated as a
-playback checkpoint. UI replies and
+playback checkpoint. The client retains a bounded, memory-only PCM cache for
+completed replies so the reply speaker control replays the audio that the
+backend actually generated. Interrupted replies retain only the source samples
+reported as rendered by the playback worklet. Replays do not emit playback
+checkpoints and the cache is discarded on page refresh. UI replies and
 perception come from backend events. Confirmed input IDs deduplicate transcripts
 and merge continuations; interruption uses the backend's heard prefix. Changing
 style, conversation, language, or leaving the page closes its connection. Chat

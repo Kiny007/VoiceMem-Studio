@@ -2,6 +2,8 @@
 (() => {
   'use strict';
   const RATE = 24000;
+  const MAX_REPLAY_RECORDS = 32;
+  const MAX_REPLAY_SAMPLES = RATE * 60 * 20;
   function resample(input, from, to) {
     if (from === to) return input;
     const ratio = from / to;
@@ -15,7 +17,10 @@
   }
   function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {} } = {}) {
     let run = null;
-    const active = owner => run === owner && !owner.closed;
+    let replayRun = null;
+    let replaySamples = 0;
+    const recordings = new Map();
+    const active = owner => !!owner && run === owner && !owner.closed;
     const emit = (owner, event) => { if (active(owner)) onEvent(event); };
     const sendJSON = (owner, message) => {
       if (active(owner) && owner.socket?.readyState === WebSocket.OPEN)
@@ -35,9 +40,119 @@
       mic.source?.disconnect();
       onState(false);
     }
+    function deleteRecording(id) {
+      const recording = recordings.get(id);
+      if (!recording) return;
+      replaySamples -= recording.frames;
+      recordings.delete(id);
+    }
+    function pruneRecordings(protectedId = '') {
+      while (recordings.size > MAX_REPLAY_RECORDS || replaySamples > MAX_REPLAY_SAMPLES) {
+        const candidate = [...recordings.values()].find(recording =>
+          recording.id !== protectedId && recording.state !== 'recording');
+        if (!candidate) break;
+        deleteRecording(candidate.id);
+      }
+    }
+    function beginRecording(id, sampleRate) {
+      id = String(id || '');
+      if (!id) return;
+      deleteRecording(id);
+      recordings.set(id, {
+        id, sampleRate: Math.max(1, Number(sampleRate) || RATE), chunks: [], frames: 0,
+        state: 'recording',
+      });
+      pruneRecordings(id);
+    }
+    function appendRecording(id, pcm) {
+      const recording = recordings.get(id);
+      if (!recording || recording.state !== 'recording' || !pcm.length) return;
+      const copy = pcm.slice();
+      recording.chunks.push(copy); recording.frames += copy.length; replaySamples += copy.length;
+      pruneRecordings(id);
+      if (replaySamples > MAX_REPLAY_SAMPLES && recordings.size === 1) deleteRecording(id);
+    }
+    function finishRecording(id, renderedFrames, interrupted = false) {
+      const recording = recordings.get(id);
+      if (!recording || recording.state !== 'recording') return;
+      const reported = Math.max(0, Math.round(Number(renderedFrames) || 0));
+      const keep = interrupted ? Math.min(recording.frames, reported)
+        : Math.min(recording.frames, reported || recording.frames);
+      if (!keep) { deleteRecording(id); return; }
+      if (keep < recording.frames) {
+        const chunks = [];
+        let remaining = keep;
+        for (const chunk of recording.chunks) {
+          if (!remaining) break;
+          const count = Math.min(remaining, chunk.length);
+          chunks.push(count === chunk.length ? chunk : chunk.slice(0, count));
+          remaining -= count;
+        }
+        replaySamples -= recording.frames - keep;
+        recording.chunks = chunks; recording.frames = keep;
+      }
+      recording.state = 'ready';
+      recordings.delete(id); recordings.set(id, recording);
+      pruneRecordings();
+    }
+    function stopReplay() {
+      const current = replayRun;
+      if (!current) return;
+      replayRun = null;
+      current.source && (current.source.onended = null);
+      try { current.source?.stop(); } catch {}
+      current.source?.disconnect();
+      if (current.ownsContext) void current.context.close().catch(() => {});
+      if (current.started) current.onState(false);
+    }
+    function finishReplay(current) {
+      if (replayRun !== current) return;
+      replayRun = null;
+      current.source.onended = null; current.source.disconnect();
+      if (current.ownsContext) void current.context.close().catch(() => {});
+      if (current.started) current.onState(false);
+    }
+    async function replay(outputId, onReplayState = () => {}) {
+      const id = String(outputId || '');
+      if (replayRun?.id === id) { stopReplay(); return false; }
+      stopReplay();
+      const recording = recordings.get(id);
+      if (!recording || recording.state !== 'ready' || !recording.frames) {
+        VMUI.notify('这条回复的原始语音暂不可用。');
+        return false;
+      }
+      const owner = active(run) && run.context && run.bus ? run : null;
+      let context;
+      try {
+        context = owner?.context || new AudioContext({ sampleRate: RATE, latencyHint: 'playback' });
+        const current = replayRun = {
+          id, context, ownsContext: !owner, source: null, started: false, onState: onReplayState,
+        };
+        await context.resume();
+        if (replayRun !== current) return false;
+        const buffer = context.createBuffer(1, recording.frames, recording.sampleRate);
+        const samples = buffer.getChannelData(0);
+        let offset = 0;
+        for (const chunk of recording.chunks) {
+          for (let i = 0; i < chunk.length; i++) samples[offset++] = chunk[i] / 32768;
+        }
+        const source = current.source = context.createBufferSource();
+        source.buffer = buffer; source.connect(owner?.bus || context.destination);
+        source.onended = () => finishReplay(current);
+        source.start(); current.started = true; onReplayState(true);
+        return true;
+      } catch (error) {
+        if (replayRun?.id === id) stopReplay();
+        else if (context && context !== run?.context) void context.close().catch(() => {});
+        VMUI.notify(error.message || '原始语音播放失败。');
+        return false;
+      }
+    }
     function end() {
+      stopReplay();
       const owner = run;
       if (!owner) return;
+      if (recordings.get(owner.output)?.state === 'recording') deleteRecording(owner.output);
       stopMic(owner);
       owner.closed = true;
       run = null;
@@ -68,6 +183,7 @@
     function audio(owner, buffer) {
       if (!owner.output) return;
       const pcm = new Int16Array(buffer), native = new Float32Array(pcm.length);
+      appendRecording(owner.output, pcm);
       for (let i = 0; i < pcm.length; i++) native[i] = pcm[i] / 32768;
       const samples = resample(native, owner.rate, owner.context.sampleRate);
       owner.player.port.postMessage({ type: 'audio', samples, sourceFrames: native.length }, [samples.buffer]);
@@ -100,8 +216,10 @@
         case 'user_transcript':
           phase(owner, 'short-thinking'); break;
         case 'answer_start':
+          stopReplay();
           owner.output = message.output_id || '';
           owner.rate = Number(message.sample_rate) || RATE;
+          beginRecording(owner.output, owner.rate);
           owner.paused = false;
           owner.player.port.postMessage({ type: 'start', outputId: owner.output, sampleRate: owner.rate });
           if (owner.clips.size) owner.player.port.postMessage({ type: 'pause' });
@@ -137,6 +255,10 @@
         owner.player.connect(owner.bus);
         owner.player.port.onmessage = ({ data }) => {
           if (!active(owner)) return;
+          if (data.outputId) {
+            if (data.type === 'drained') finishRecording(data.outputId, data.renderedSamples);
+            else if (data.type === 'interrupted') finishRecording(data.outputId, data.renderedSamples, true);
+          }
           const states = { buffer: 'playing', started: 'playing', resumed: 'playing', underflow: 'stalled' };
           if (data.type === 'level' && data.outputId) sendJSON(owner, {
             type: 'avatar_audio_level', output_id: data.outputId,
@@ -203,6 +325,7 @@
       return owner.ready;
     }
     async function start() {
+      stopReplay();
       const ready = connect(), owner = run;
       if (!owner || owner.mic) return;
       const mic = owner.mic = {};
@@ -230,6 +353,7 @@
       } catch (error) { if (active(owner)) { stopMic(owner); VMUI.notify(`麦克风未启动：${error.message}`); } }
     }
     async function send(text) {
+      stopReplay();
       const owner = await connect();
       if (!active(owner)) throw new Error('会话已结束');
       sendJSON(owner, { type: 'user_text', text });
@@ -248,7 +372,7 @@
         .then(response => { if (!response.ok) throw new Error('语言切换失败'); })
         .catch(error => VMUI.notify(error.message));
     });
-    return { send, start, toggle, cancel: end, stop: end };
+    return { send, start, toggle, replay, stopReplay, cancel: end, stop: end };
   }
   function applyUser(messages, event, role) {
     const id = event.input_turn_id;

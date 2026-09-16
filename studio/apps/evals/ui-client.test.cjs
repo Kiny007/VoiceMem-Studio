@@ -6,14 +6,14 @@ const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../ui/studio-client.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture() {
-  const sockets = [], nodes = [], events = [], notices = [], states = [], contexts = [], listeners = {};
+  const sockets = [], nodes = [], sources = [], events = [], notices = [], states = [], contexts = [], listeners = {};
   let grant;
   class Socket {
     static OPEN = 1;
     constructor() { this.readyState = 1; this.sent = []; sockets.push(this); }
     send(message) { this.sent.push(typeof message === 'string' ? JSON.parse(message) : message); }
     close() { this.readyState = 3; }
-    receive(message) { this.onmessage?.({ data: typeof message === 'object' ? JSON.stringify(message) : message }); }
+    receive(message) { this.onmessage?.({ data: message instanceof ArrayBuffer ? message : typeof message === 'object' ? JSON.stringify(message) : message }); }
   }
   class Node {
     constructor(_context, name) {
@@ -23,12 +23,18 @@ function fixture() {
     connect() {} disconnect() {}
   }
   class Context {
-    constructor() { this.sampleRate = 24000; this.audioWorklet = {addModule: async () => {}}; contexts.push(this); }
+    constructor(options = {}) { this.sampleRate = options.sampleRate || 24000; this.destination = {}; this.buffers = []; this.audioWorklet = {addModule: async () => {}}; contexts.push(this); }
     async resume() {} async close() {this.closed = true;}
     createGain() {return {connect() {}, disconnect() {}, gain:{value:1}};}
     createMediaStreamSource() {return {connect() {}, disconnect() {}};}
-    createBuffer(_channels, length) {return {getChannelData: () => new Float32Array(length)};}
-    createBufferSource() {return {connect() {}, disconnect() {}, start() {}, stop() {}};}
+    createBuffer(_channels, length, sampleRate = this.sampleRate) {
+      const data = new Float32Array(length), buffer = {length, sampleRate, getChannelData: () => data};
+      this.buffers.push(buffer); return buffer;
+    }
+    createBufferSource() {
+      const source = {connect() {}, disconnect() {}, start() {this.started = true;}, stop() {this.stopped = true;}};
+      sources.push(source); return source;
+    }
   }
   const context = {URL, ArrayBuffer, Float32Array, Int16Array, setTimeout, clearTimeout, console,
     AudioContext:Context, AudioWorkletNode:Node, WebSocket:Socket,
@@ -44,7 +50,7 @@ function fixture() {
   async function connected() {
     const sending = client.send('fixture'); await tick(); sockets[0].receive({type:'session_ready',mode:'llm_tts'}); await sending;
   }
-  return {api, client, sockets, nodes, events, notices, states, contexts, listeners, connected, grant:stream => grant(stream)};
+  return {api, client, sockets, nodes, sources, events, notices, states, contexts, listeners, connected, grant:stream => grant(stream)};
 }
 test('text waits for session readiness and uses the existing user_text contract', async () => {
   const f = fixture(); const sent = f.client.send('hello'); await tick();
@@ -91,6 +97,31 @@ test('interrupt clears queued audio and preserves the server heard prefix', asyn
   f.sockets[0].receive({type:'answer_interrupt',output_id:'one',heard_text:'heard'});
   assert.equal(f.nodes[0].messages.at(-1).reason, 'interrupted');
   assert.equal(f.events.at(-1).heard_text, 'heard'); f.client.cancel();
+});
+test('reply replay uses the original PCM without sending new playback checkpoints', async () => {
+  const f = fixture(); await f.connected(); const socket = f.sockets[0], player = f.nodes[0];
+  socket.receive({type:'answer_start',output_id:'one',sample_rate:24000});
+  socket.receive(new Int16Array([0, 16384, -16384, 32767]).buffer);
+  socket.receive({type:'answer_done',output_id:'one'});
+  player.port.onmessage({data:{type:'drained',outputId:'one',renderedSamples:4,sampleRate:24000}});
+  const sent = socket.sent.length, replayStates = [];
+  assert.equal(await f.client.replay('one', state => replayStates.push(state)), true);
+  const buffer = f.contexts[0].buffers.at(-1), data = buffer.getChannelData(0);
+  assert.equal(buffer.length, 4); assert.equal(buffer.sampleRate, 24000);
+  assert.deepEqual([...data].map(value => Number(value.toFixed(5))), [0, .5, -.5, .99997]);
+  assert.equal(socket.sent.length, sent); assert.deepEqual(replayStates, [true]);
+  f.sources.at(-1).onended(); assert.deepEqual(replayStates, [true, false]); f.client.cancel();
+});
+test('interrupted reply replay is trimmed to samples rendered by the worklet', async () => {
+  const f = fixture(); await f.connected(); const socket = f.sockets[0], player = f.nodes[0];
+  socket.receive({type:'answer_start',output_id:'one',sample_rate:24000});
+  socket.receive(new Int16Array([100, 200, 300, 400]).buffer);
+  socket.receive({type:'answer_interrupt',output_id:'one',heard_text:'heard'});
+  player.port.onmessage({data:{type:'interrupted',outputId:'one',renderedSamples:2,sampleRate:24000}});
+  f.client.cancel();
+  assert.equal(await f.client.replay('one'), true);
+  assert.equal(f.contexts[1].buffers.at(-1).length, 2);
+  f.client.stopReplay();
 });
 test('final transcript replaces optimistic text once and continuation keeps the original bubble', () => {
   const f = fixture(), messages = [{role:'user',text:'hello',pending:true}];

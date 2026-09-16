@@ -29,7 +29,7 @@ function renderRail(){
   });
 }
 function selectConversation(c){
-  voiceInput.cancel();clearTimeout(typeTimer);clearTimeout(markTimer);window.speechSynthesis?.cancel();
+  voiceInput.cancel();clearTimeout(typeTimer);clearTimeout(markTimer);
   document.body.classList.remove('talking');current=c;state.busy=!!c.busy;
   const me=[...c.messages].reverse().find(m=>m.role==='me');
   const her=[...c.messages].reverse().find(m=>m.role==='her');
@@ -69,7 +69,13 @@ function renderLog(){
     if(m.marks){ const mk = el('div','marks'); renderMarks(mk, m.marks, false); turn.append(mk); }
     if(m.role==='her'){
       const actions=el('div','turn-actions');const copy=el('button',null,'复制');copy.onclick=()=>VMUI.copy(m.text);
-      const read=el('button',null,'朗读');read.onclick=()=>VMUI.read(m.text,read);actions.append(copy,read);turn.append(actions);
+      const read=el('button',null,m.replaying?'停止重播':'重播原声');
+      read.setAttribute('aria-pressed',String(!!m.replaying));
+      read.onclick=()=>{
+        if(state.busy){VMUI.notify('请等当前回复完成。');return;}
+        void voiceInput.replay(m.outputId,on=>{m.replaying=on;read.textContent=on?'停止重播':'重播原声';read.setAttribute('aria-pressed',String(on));document.body.classList.toggle('talking',on);});
+      };
+      actions.append(copy,read);turn.append(actions);
     }
     host.append(turn);
   });
@@ -294,7 +300,7 @@ document.querySelector('.switch').addEventListener('keydown',e=>{if(e.key==='Arr
 addEventListener('keydown',e=>{if(e.key==='Escape'){setDrawer(false);setRail(innerWidth>1024 && !document.body.classList.contains('rail-collapsed'));voiceInput.cancel();}});
 document.addEventListener('visibilitychange',()=>{cancelAnimationFrame(raf);raf=0;lastT=0;if(!document.hidden && ink!==inkTarget)raf=requestAnimationFrame(tick);});
 addEventListener('pageshow',e=>{if(e.persisted){selectConversation(current);resizeInk();if(ink!==inkTarget&&!raf)raf=requestAnimationFrame(tick);}});
-document.addEventListener('settings-open',()=>{voiceInput.cancel();window.speechSynthesis?.cancel();});
+document.addEventListener('settings-open',()=>voiceInput.cancel());
 addEventListener('pagehide',()=>{cancelAnimationFrame(raf);clearTimeout(typeTimer);clearTimeout(markTimer);clearTimeout(toastTimer);});
 
 })();

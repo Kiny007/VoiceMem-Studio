@@ -22,16 +22,6 @@
     try { await navigator.clipboard.writeText(text); notify('已复制'); }
     catch { notify('复制未成功，请选中文字后复制。'); }
   }
-  function read(text, button, onState) {
-    if (!('speechSynthesis' in window)) { notify('此浏览器不支持朗读。'); return; }
-    if (window.speechSynthesis.speaking) { window.speechSynthesis.cancel(); onState?.(false); return; }
-    const utterance = new SpeechSynthesisUtterance(text); utterance.lang = window.VMSettings?.language||'zh-CN';
-    const reset = () => { onState?.(false); if(button) {button.setAttribute('aria-pressed','false');button.title='朗读';} };
-    utterance.onend = reset; utterance.onerror = reset;
-    if(button) { button.setAttribute('aria-pressed','true'); button.title='停止朗读'; }
-    utterance.onstart=()=>onState?.(true);
-    window.speechSynthesis.speak(utterance);
-  }
   function voice({onState,onInterim,onFinal}) {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let current = null, active = false;
@@ -75,6 +65,6 @@
     document.addEventListener('visibilitychange',()=>{if(document.hidden)cancel();});
     return {start,stop,cancel,toggle:()=>active?stop():start()};
   }
-  window.addEventListener('pagehide',()=>{clearTimeout(toastTimer);window.speechSynthesis?.cancel();});
-  window.VMUI = {notify,copy,read,voice,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches};
+  window.addEventListener('pagehide',()=>clearTimeout(toastTimer));
+  window.VMUI = {notify,copy,voice,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches};
 })();
