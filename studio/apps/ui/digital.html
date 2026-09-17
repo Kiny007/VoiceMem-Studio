@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Echo · 数字人</title>
+<meta name="description" content="数字人对话与双脑记忆空间。">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23232228'/%3E%3Ccircle cx='20' cy='20' r='9.5' fill='none' stroke='white' stroke-width='2'/%3E%3Ccircle cx='20' cy='20' r='3.4' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="digital.css">
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="settings.css">
+</head>
+<body data-style="digital">
+
+<svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+<symbol id="i-logo" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.4"/><path d="M12 3v3.6M21 12h-3.6"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v2"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V6m-6 6 6-6 6 6"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/></symbol>
+</defs></svg>
+
+<div class="backdrop" aria-hidden="true"><img id="bg" src="assets/digital-background.jpg" alt=""></div>
+
+<div class="peek">
+  <button class="logo-btn" id="peekLogo" aria-label="展开对话列表"><svg><use href="#i-logo"/></svg></button>
+  <button class="new" id="peekNew"><svg><use href="#i-plus"/></svg>新对话</button>
+</div>
+<button class="drawer-btn" id="drawerBtn" aria-label="查看聊天记录" aria-expanded="false"><svg><use href="#i-chat"/></svg></button>
+
+    <nav class="style-nav" aria-label="页面导航"><a href="index.html">首页</a><a href="technical.html">科技风 ↗</a></nav>
+
+<div class="app">
+
+  <aside class="rail" aria-label="对话列表">
+    <div class="rail-inner">
+      <div class="rail-top">
+        <button class="logo-btn" id="railLogo" aria-label="收起对话列表" aria-expanded="true"><svg><use href="#i-logo"/></svg></button>
+        <button class="new" id="newChat"><svg><use href="#i-plus"/></svg>新对话</button>
+      </div>
+      <div class="rail-scroll">
+        <div class="group"><div class="group-name">置顶</div><div id="pinList"></div></div>
+        <div class="group"><div class="group-name">对话</div><div id="chatList"></div></div>
+      </div>
+      <button type="button" id="settingsBtn" class="digital-settings">设置</button>
+      <div class="rail-foot">
+        <span class="face">V</span>
+        <span class="who"><b>VoiceMem</b><small>记忆空间</small></span>
+      </div>
+    </div>
+  </aside>
+
+  <section class="stage" aria-label="Echo">
+    <div class="human">
+      <div class="scene">
+        <div class="asr-actions"><span>本轮感知 · ASR</span><button class="start-talk" id="startTalk" type="button" aria-pressed="false">开始对话</button></div>
+        <p class="said on" id="said"><em>说点什么，她在听。</em></p>
+        <div class="marks" id="marks" aria-live="polite"></div>
+        <div class="glass">
+          <p class="voice" id="voice">我在。今天想从哪里说起？</p>
+          <form class="ask" id="ask">
+            <label class="sr" for="say">对 Echo 说</label>
+            <input id="say" autocomplete="off" placeholder="说点什么…">
+            <button type="button" class="round mic" id="micBtn" aria-label="开始说话"><svg><use href="#i-mic"/></svg></button>
+            <button type="submit" class="round send" id="sendBtn" aria-label="发送" disabled><svg><use href="#i-up"/></svg></button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="right">
+
+    <div class="switch" role="group" aria-label="右侧显示"><span class="thumb" aria-hidden="true"></span>
+      <button id="tabLog" aria-pressed="true">对话记录</button>
+      <button id="tabMem" aria-pressed="false">记忆空间</button>
+    </div>
+
+    <div class="log" aria-label="聊天记录">
+      <div class="log-glass">
+        <div class="log-head"><h2>与 Echo 的对话</h2><small>今天</small></div>
+        <div class="log-scroll" id="logScroll"></div>
+      </div>
+    </div>
+
+  </section>
+
+    <div class="memory" id="memory" aria-label="记忆空间">
+      <canvas class="ink-canvas" id="inkCanvas" aria-hidden="true"></canvas>
+      <div class="memory-in" id="memoryIn">
+        <div class="memory-head"><h2>记忆空间</h2><p>你说过的话在这里沉下去，彼此连成一片。</p></div>
+        <div class="brain-wrap">
+          <div class="brain">
+            <canvas id="brain-background-canvas" aria-hidden="true"></canvas>
+<canvas id="scene-canvas" aria-label="记忆域导航示意图"></canvas>
+          </div>
+        </div>
+        <div class="memory-legend">
+          <span><i></i>记忆节点</span><span><i class="hot"></i>情绪与人格</span><span>点击节点查看记忆域</span>
+        </div>
+      </div>
+    </div>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="ref/memory-graph-data.js"></script>
+<script src="ui.js"></script>
+<script src="studio-client.js"></script>
+<script src="settings.js"></script>
+<script src="digital.js"></script>
+<script src="memory-scene.js"></script>
+</body>
+</html>

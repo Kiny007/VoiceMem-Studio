@@ -230,6 +230,17 @@ class QwenThinkingRouter:
         return await asyncio.to_thread(
             self.classify, text, memory_prefetch_hint, history)
 
+    async def generate_short_text_async(self, system: str, prompt: str, *,
+                                        max_tokens: int = 40, timeout_s: float = 1.2) -> str:
+        """Generate optional short text without modifying depth policy or caches."""
+        from .short_text import generate_short_text
+        return await generate_short_text(self, system, prompt,
+                                         max_tokens=max_tokens, timeout_s=timeout_s)
+
+    def _short_text(self, system, prompt, max_tokens, cancelled, deadline):
+        from .short_text import torch_short_text
+        return torch_short_text(self, system, prompt, max_tokens, cancelled, deadline)
+
     def warmup(self) -> ThinkingDecision:
         """Load weights and prime depth classification before accepting input."""
         return self.classify("介绍一下向量数据库", False)

@@ -174,15 +174,18 @@ def build_app(mode, session, classify, snapshot=None, audio_of=None, spaces=None
     @app.websocket("/ws")
     async def ws(sock: WebSocket):
         await sock.accept()
+        tee = TeeSocket(sock, pet_hub)
         await sock.send_json({"type": "session_ready", "mode": mode})
-        await pet_hub.broadcast({"type": "conversation_started"})
+        await pet_hub.broadcast({"type": "conversation_started",
+                                 "session_id": tee.session_id})
         try:
 
-            await session(TeeSocket(sock, pet_hub))
+            await session(tee)
         except WebSocketDisconnect:
             pass
         finally:
-            await pet_hub.broadcast({"type": "conversation_ended"})
+            await pet_hub.broadcast({"type": "conversation_ended",
+                                     "session_id": tee.session_id})
 
     @app.websocket("/ws-pet")
     async def ws_pet(sock: WebSocket):
@@ -190,7 +193,8 @@ def build_app(mode, session, classify, snapshot=None, audio_of=None, spaces=None
         pet_hub.add(sock)
         try:
             while True:
-                await sock.receive()
+                if (await sock.receive())["type"] == "websocket.disconnect":
+                    break
         except WebSocketDisconnect:
             pass
         finally:
@@ -299,10 +303,15 @@ def build_app(mode, session, classify, snapshot=None, audio_of=None, spaces=None
     def index(request: Request, pet_on: bool = Query(False, alias="pet")):
         if pet_on:
             pet.ensure_running(loopback_ws_url(request))
+        return FileResponse(HERE.parent / "apps" / "ui" / "index.html", headers=_NOCACHE)
+
+    @app.get("/legacy")
+    def legacy():
         return FileResponse(HERE / "voicemem.html", headers=_NOCACHE)
 
     @app.get("/classic")
     def classic():
         return FileResponse(HERE / "index.html", headers=_NOCACHE)
 
+    app.mount("/ui", StaticFiles(directory=HERE.parent / "apps" / "ui", html=True), name="studio-ui")
     return app

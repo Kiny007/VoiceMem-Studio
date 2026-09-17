@@ -259,6 +259,9 @@ SOUND_LEVEL = float(os.environ.get("VOICEMEM_SOUND_LEVEL", "0.01"))
 #: 流式 ASR 的音频积压超过这么多秒就报一行（限频）。
 ASR_BACKLOG_WARN_S = float(os.environ.get("VOICEMEM_ASR_BACKLOG_WARN", "0.4"))
 ASR_DEBUG = os.environ.get("VOICEMEM_ASR_DEBUG", "0") == "1"
+# Final decoding gets a short quality preference, not an exclusive wait path.
+ASR_FINAL_GRACE_S = 0.08
+ASR_FINISH_TIMEOUT_S = 1.0
 #: 投机检索节流：距上次起跑不到这么久、且文本没多出 SPEC_MIN_GROWTH 个字，就不重跑。
 #: 实测一轮里跑 3 次、每次 300~600ms，全在 CPU 上跟流式 ASR 抢——ASR 每块从 55ms
 #: 涨到 167ms，字就一顿一顿地出。检索只对"说完那一刻"有用，中途那几次多半白算。
@@ -694,7 +697,15 @@ class VoiceStream:
                 print(f"[asr-final] 排队 {(time.monotonic()-submitted)*1000:.0f}ms", flush=True)
             return self._transcribe_final(pcm)
 
-        return await asyncio.get_running_loop().run_in_executor(_FINAL_ASR_EXECUTOR, work)
+        future = asyncio.get_running_loop().run_in_executor(_FINAL_ASR_EXECUTOR, work)
+        try:
+            return await asyncio.wait_for(future, timeout=ASR_FINISH_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            # A running native decode cannot be stopped safely. Its result stays
+            # private to this cancelled future and cannot mutate a later turn.
+            print(f"[asr-final] 离线复核等待超时（{ASR_FINISH_TIMEOUT_S*1000:.0f}ms，含排队），使用转写回退",
+                  flush=True)
+            return None
 
     def refine_current_snapshot(self) -> "asyncio.Task[str]":
         """Freeze current audio and return a background final-ASR transcript task.
@@ -713,33 +724,63 @@ class VoiceStream:
         return asyncio.create_task(resolve())
 
     async def _finish_asr(self, pcm):
-        """完整音频复核与流式收尾并行；复核有效就不等落后的 partial 队列。"""
+        """Race both decoders after a final-ASR grace period, with one deadline."""
         started = time.monotonic()
+        deadline = started + ASR_FINISH_TIMEOUT_S
         final = asyncio.create_task(self._final_text_async(pcm))
         flush = asyncio.ensure_future(self.asr_worker.flush())
+        pending = {final, flush}
+        text = stream_text = None
+        timed_out = False
         try:
-            # The streaming worker already has the last stable characters. Give
-            # the offline refiner a short head start, but never make the user
-            # wait on a slow final pass just to release the turn.
-            text = None
-            try:
-                text = await asyncio.wait_for(final, timeout=0.08)
-            except asyncio.TimeoutError:
-                text = None
-            if text and text.strip():
-                if flush.done() and not flush.cancelled():
-                    self._text = flush.result() or self._text
+            # Unlike wait_for, wait does not cancel a useful late final result.
+            await asyncio.wait({final}, timeout=min(ASR_FINAL_GRACE_S, ASR_FINISH_TIMEOUT_S))
+            while True:
+                for task in tuple(pending):
+                    if not task.done():
+                        continue
+                    pending.remove(task)
+                    if task.cancelled():
+                        continue
+                    try:
+                        result = task.result()
+                    except Exception as exc:
+                        kind = "离线复核" if task is final else "流式收尾"
+                        print(f"[asr-final] {kind}失败（{type(exc).__name__}），尝试另一路转写",
+                              flush=True)
+                        continue
+                    if result and result.strip():
+                        if task is final:
+                            text = result
+                        else:
+                            stream_text = result
+                if text or stream_text or not pending:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                await asyncio.wait(pending, timeout=remaining,
+                                   return_when=asyncio.FIRST_COMPLETED)
+            if text:
+                if stream_text:
+                    self._text = stream_text
                     self._apply_refined(text)
                     source = "完整复核（流式已就绪）"
                 else:
-                    # raw_text 原用于与提前下注文本比覆盖率。这里的流式文本缺尾巴，
-                    # 必须用完整复核文本作比较，不能让旧半句话的下注误判为覆盖100%。
+                    # Partial streaming text cannot prove full snapshot coverage.
                     self._text = self._raw_text = text
                     self.asr_worker.reset()
                     source = "完整复核（绕过流式积压）"
+            elif stream_text:
+                self._text = stream_text
+                source = "流式收尾"
             else:
-                self._text = (await flush) or self._text
-                source = "流式收尾（离线复核超时或无文本）"
+                self.asr_worker.reset()
+                source = "最近可用转写回退"
+            if timed_out:
+                print(f"[asr-final] 收尾等待超时（{ASR_FINISH_TIMEOUT_S*1000:.0f}ms），使用最近可用转写",
+                      flush=True)
             if ASR_DEBUG:
                 print(f"[asr-final] {source} · ASR收尾 {(time.monotonic()-started)*1000:.0f}ms",
                       flush=True)

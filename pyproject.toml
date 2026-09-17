@@ -120,4 +120,4 @@ exclude = ["studio.models*"]
 "*" = ["data/*.txt", "*.txt", "assets/*.wav"]
 
 "studio.web" = ["*.html", "*.js", "images/*.webp"]
-"studio.core.utils.interax" = ["*.mjs"]
+"studio.apps" = ["ui/*.html", "ui/*.css", "ui/*.js", "ui/*.webp", "ui/assets/*.jpg", "ui/ref/*.js"]

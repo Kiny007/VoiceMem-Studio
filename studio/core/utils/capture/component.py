@@ -19,6 +19,8 @@ class Capture:
                          on_speech_start=None, textless_confirm_s=None,
                          turn_taking=None, on_interax_page_action=None):
         """Yield confirmed turns while forwarding audio, playback, and cancellation events."""
+        from uuid import uuid4
+        input_turn_id = uuid4().hex
         pause_gate = PauseGate()
         stream = open_stream(self.vm, spec_min_chars=self.SPEC_MIN_CHARS, gamble_s=self.GAMBLE_S,
                            confirm_s=self.CONFIRM_S, eot=self._eot(), textless_confirm_s=textless_confirm_s,
@@ -110,12 +112,15 @@ class Capture:
                                   replay=self._replay_id(turn.text, turn.result),
                                   emotion=owner.get("emotion", ""),
                                   route=turn.route,
-                                  reply_mode=MEMORY if gate.needs_memory(turn.route) else DIRECT)
+                                  reply_mode=MEMORY if gate.needs_memory(turn.route) else DIRECT,
+                                  input_turn_id=uuid4().hex)
+                    input_turn_id = uuid4().hex
                 continue
             if msg.get("bytes") is None:
                 continue
             raw = msg["bytes"]
             if turn_finished:
+                input_turn_id = uuid4().hex
                 utterance = UtteranceGuard()
                 pause_gate.reset()
                 bc.reset_turn()
@@ -311,10 +316,12 @@ class Capture:
                 explicit=self._is_explicit_interrupt(cur), confirmed=barged)
             if echo and last_partial:
                 last_partial = ""
-                await sock.send_json({"type": "partial_transcript", "text": "", "replace": True})
+                await sock.send_json({"type": "partial_transcript", "text": "", "replace": True,
+                                      "input_turn_id": input_turn_id})
             if st.text.strip() and st.text != last_partial and show_partial:
                 last_partial = st.text
                 await sock.send_json({"type": "partial_transcript", "text": st.text, "replace": True,
+                                      "input_turn_id": input_turn_id,
                                       "non_interrupting": utterance.started_busy and self._is_backchannel(cur)})
             if st.turn:
                 # A late ASR result may arrive after playback drains or a candidate
@@ -334,7 +341,8 @@ class Capture:
                     # change speaker identity, or wait for hearing() to still be true.
                     if candidate and on_candidate_reject:
                         await on_candidate_reject()
-                    await sock.send_json({"type": "user_backchannel", "text": st.turn.text})
+                    await sock.send_json({"type": "user_backchannel", "text": st.turn.text,
+                                          "input_turn_id": input_turn_id})
                     if self.BARGE_DEBUG:
                         print(f"[barge] 开口时助手在说话，附和只显示不回复：{st.turn.text!r}", flush=True)
                     candidate = barged = discard_candidate_turn = False
@@ -466,7 +474,8 @@ class Capture:
                               reply_mode=(MEMORY if gate.needs_memory(st.turn.route)
                                           else DIRECT),
                               early_ok=_early_ok,
-                              speech_end=last_speak_t)
+                              speech_end=last_speak_t,
+                              input_turn_id=input_turn_id)
 
     async def _session_anticipate(self, session_id: str, sock, on_close=None, **kwargs):
         try:

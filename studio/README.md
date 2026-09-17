@@ -32,7 +32,7 @@ studio/
 Linux/NVIDIA 的完整 Docker 部署及 Mac 原生部署见 [部署说明](../docker/README.md)。
 Linux 在 `.env` 配置好 API Key 后可直接执行 `docker compose up -d --build`。
 
-Windows/macOS 可以使用内置桌宠的 [桌面 App](apps/README.md)，复用当前 Web 界面。
+Windows/macOS 可以使用内置桌宠的 [桌面 App](apps/README.md)，首页选择科技风或数字人；与浏览器共用双风格 UI。
 Windows 本机 CUDA 后端放在 WSL2，Mac 使用原生 MLX；Linux 只运行后端，不自动启动桌宠。
 自动启动能力与待验证内容见 [平台设计](apps/PLATFORMS.md)。
 
@@ -56,7 +56,8 @@ python -m studio --verbose
 ```
 
 直接使用 Python 入口且未覆盖配置时，Linux 自动选择 CUDA，Mac 自动选择 MLX。
-默认 DeepSeek、中文、
+交互终端未指定 `--llm` 时先选择回复 API；`--check`、显式 `--llm` 和非交互命令不询问。
+非交互默认 DeepSeek、中文、
 `studio-zh` 记忆空间和 `8787` 端口，CUDA 默认只使用 `cuda:0`。
 原来的 `python web/run.py` 仍使用同一入口。需要其他记忆空间时加 `--space 空间名`；
 直接使用 Python 入口时，省略 `--verbose` 可切换为精简终端日志。
@@ -153,22 +154,38 @@ Install the matching extra in its own environment; do not combine both extras.
 | 任意 | 是 | mem+cot |
 
 记忆资格沿用 `voicemem/gate.py` 原有判断，复用已经完成的检索或补齐缺失检索。
-小模型只根据当前发言和最近 4 条消息（共 320 字符）回答“是否需要深思”，提示在
+路由阶段，小模型只根据当前发言和最近 4 条消息（共 320 字符）回答“是否需要深思”，提示在
 `harness/reply_modes/policy.py`。Studio 不再额外按日期、问句或关键词硬编码路由。
 普通推理或小模型调用失败都不会否决 Gate 已批准的记忆；陌生人声纹仍不能访问主人记忆。
 原 Gate 和小模型都可能误判，但记忆与推理各自负责自己的部分，不再重复筛掉记忆。
 
-mem+cot 在正文音频尚未就绪时使用原有长垫话流程，不再被最近闲聊较快的耗时估计挡住。
+深思提示词按“当前这一轮是否需要复杂推理”判断，不因上一轮谈过难题而一直保持 CoT。
+查日程或偏好、简单公式计算、询问现成结果、普通建议与解释通常不启用 thinking；
+明确请求深入思考、复杂证明、故障因果分析、多约束权衡仍可进入 mem+cot。
+没有新增关键词拦截或第二次模型判定，普通推理也不会取消原 Gate 已批准的记忆检索。
+
+mem+cot 在正文音频尚未就绪时，按 **30% 概率**尝试长垫话。每个确认回合只抽一次；
+实际发出后，按音频时长再加 **20 秒冷却**限制下一次，未命中不补其他附和。
+文字复用已加载的 Qwen3-0.6B 生成，不再调用正文 API；带当前全文和最近两条各最多
+80 字符的上下文，关闭 thinking，最多生成 40 tokens。排队加生成超过 **1.2 秒**、
+权重未加载、输出格式不合格或失败时直接跳过，不拖住正文。
+概率、冷却、超时及提示词统一在 `harness/turn_taking/policy.py` 的
+`WORK_FILLER_PROBABILITY`、`WORK_FILLER_COOLDOWN_S`、`WORK_FILLER_TIMEOUT_S`、
+`FILLER_PROMPT` / `FILLER_INPUT_PROMPT` 配置，修改后重启生效。
+概率为 0 可关闭长垫话，为 1 仍受冷却及正文就绪控制。
 正文和垫话继续并行生成；正文先准备好就跳过垫话，垫话已经播放则等待它结束再放行正文。
 这不改变讲话途中的附和、未完句续话计时、TTS 切句或提前生成。
 选择 mem 不代表一定能查到日程：记忆库必须已有相关记录，没有记录时不能编造。
 
 ```bash
-python -m unittest evals.test_thinking_router evals.test_dialogue_harness.TurnTakingTimingTests
+python -m unittest evals.test_work_filler evals.test_thinking_router evals.test_dialogue_harness.TurnTakingTimingTests
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m evals.router_quality --device cuda:0 --assert-quality
+# Optional old/new comparison and a separate paraphrase set (local GPU only).
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m evals.router_quality --device cuda:0 --compare-ref b27bce0 --holdout
 ```
 
-后者仅测本地模型的深思分类，不访问记忆库；记忆资格的保留由前面的确定性回归验证。
+模型测试仅测本地模型的深思分类，不访问记忆库；分别报告普通问题误进 CoT、复杂问题漏判及耗时。
+记忆资格的保留由前面的确定性回归验证。
 这些检查不能替代实际记忆召回、完整 GPU 负载下的延迟或真实听感验收。
 
 ## TTS 切句

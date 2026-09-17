@@ -15,6 +15,9 @@ class VoiceMemPCMPlayer extends AudioWorkletProcessor {
     this.maxTargetFrames = Math.round(sampleRate * 0.32);
     this.stableFrames = 0;
     this.reportFrames = 0;
+    this.levelFrames = 0;
+    this.levelEnergy = 0;
+    this.levelPeak = 0;
 
     // ── 底噪（comfort noise）────────────────────────────────────────────────
     // 谁都不出声的时候输出纯数字静音，听感是"电话挂断了"——人对绝对静音的解读
@@ -76,6 +79,7 @@ class VoiceMemPCMPlayer extends AudioWorkletProcessor {
       }
       if (message.type === "pause") {
         this.paused = true;
+        this._level(0, 0);
         this._report("paused");
         return;
       }
@@ -122,6 +126,7 @@ class VoiceMemPCMPlayer extends AudioWorkletProcessor {
 
   _clear(notify, state = "reset") {
     if (notify) this._report(state);
+    if (this.outputId) this._level(0, 0);
     this.queue.length = 0;
     this.offset = 0;
     this.bufferedFrames = 0;
@@ -131,6 +136,9 @@ class VoiceMemPCMPlayer extends AudioWorkletProcessor {
     this.stableFrames = 0;
     this.outputId = "";
     this.renderedSamples = 0;
+    this.levelFrames = 0;
+    this.levelEnergy = 0;
+    this.levelPeak = 0;
   }
 
   _drained() {
@@ -145,6 +153,17 @@ class VoiceMemPCMPlayer extends AudioWorkletProcessor {
       bufferedMs: Math.round((this.bufferedFrames / sampleRate) * 1000),
       targetMs: Math.round((this.targetFrames / sampleRate) * 1000),
       outputId: this.outputId,
+      renderedSamples: Math.round(this.renderedSamples),
+      sampleRate: this.sourceSampleRate,
+    });
+  }
+
+  _level(rms, peak) {
+    this.port.postMessage({
+      type: "level",
+      outputId: this.outputId,
+      rms,
+      peak,
       renderedSamples: Math.round(this.renderedSamples),
       sampleRate: this.sourceSampleRate,
     });
@@ -216,6 +235,19 @@ class VoiceMemPCMPlayer extends AudioWorkletProcessor {
         const v = output[i] * this.gain;
         output[i] = v / (1 + Math.abs(v) * 0.3);
       }
+    }
+
+    // Measure the samples that actually reach the reply bus, before comfort noise.
+    // This is intentionally independent of synthesis and microphone input.
+    for (let i = 0; i < written; i++) {
+      const value = output[i];
+      this.levelEnergy += value * value;
+      this.levelPeak = Math.max(this.levelPeak, Math.abs(value));
+    }
+    this.levelFrames += written;
+    if (this.levelFrames >= sampleRate / 30) {
+      this._level(Math.sqrt(this.levelEnergy / this.levelFrames), this.levelPeak);
+      this.levelFrames = 0; this.levelEnergy = 0; this.levelPeak = 0;
     }
 
     this._comfort(output, written);

@@ -9,22 +9,25 @@
   "main": "main.cjs",
   "engines": { "node": ">=22.12.0" },
   "scripts": {
+    "ensure:deps": "node scripts/ensure-dependencies.cjs",
     "prepare:pet": "node scripts/prepare-pet.cjs",
-    "prestart": "npm run prepare:pet",
+    "prestart": "npm run ensure:deps && npm run prepare:pet",
     "start": "node launch.cjs",
     "test": "node --test evals/*.test.cjs",
-    "prepack": "npm run prepare:pet",
+    "prepack": "npm run ensure:deps && npm run prepare:pet",
     "pack": "electron-builder --dir",
-    "predist:win": "npm run prepare:pet",
+    "predist:win": "npm run ensure:deps && npm run prepare:pet",
     "dist:win": "electron-builder --win nsis --x64",
-    "predist:mac": "npm run prepare:pet",
+    "predist:mac": "npm run ensure:deps && npm run prepare:pet",
     "dist:mac": "electron-builder --mac dmg zip --arm64",
-    "predist:mac:x64": "npm run prepare:pet",
+    "predist:mac:x64": "npm run ensure:deps && npm run prepare:pet",
     "dist:mac:x64": "electron-builder --mac dmg zip --x64"
   },
   "devDependencies": {
     "electron": "44.3.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "6.5.10"
   },
   "build": {
     "appId": "org.voicemem.studio",

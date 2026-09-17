@@ -71,23 +71,35 @@ class _Segment:
     alignments: list[TextAlignment] = field(default_factory=list)
 
 class AudioTimeline:
-    """Track generated text, emitted PCM and client playback on one media clock."""
+    """Track generated PCM, delivery and playback on one media clock.
+
+    Studio enables ``track_delivery`` and records successful sends separately.
+    Legacy direct callers may treat ``append_audio`` as emission; only that mode
+    retains elapsed-time playback estimation before a checkpoint arrives.
+    """
 
     def __init__(self, sample_rate: int = OUTPUT_SAMPLE_RATE,
                  prebuffer_seconds: float = 0.0,
                  speech_units_per_second: float = DEFAULT_SPEECH_UNITS_PER_SECOND,
-                 rate_estimator: SpeechRateEstimator | None = None):
+                 rate_estimator: SpeechRateEstimator | None = None,
+                 track_delivery: bool = False):
         self.output_id = uuid.uuid4().hex
         self.sample_rate = int(sample_rate)
         self.prebuffer_seconds = max(0.0, float(prebuffer_seconds))
         self.rate_estimator = rate_estimator or SpeechRateEstimator(
             speech_units_per_second)
         self.generated_text = ""
+        self.generated_samples = 0
         self.sent_samples = 0
         self.rendered_samples = 0
         self.sequence = 0
         self.generation_complete = False
         self.context_saved = False
+        self.context_managed = False
+        self.track_delivery = track_delivery
+        self.interrupted = False
+        self._frozen_samples: int | None = None
+        self._frozen_text: str | None = None
         self.checkpoint_seen = False
         self.playback_state = "idle"
         self._first_audio_at: float | None = None
@@ -105,7 +117,7 @@ class AudioTimeline:
             segment_id=segment_id,
             text_start=max(0, int(text_start)),
             text_end=max(0, int(text_end)),
-            audio_start_samples=self.sent_samples,
+            audio_start_samples=self.generated_samples,
         )
         self._segments.append(segment)
         self._segment_by_id[segment_id] = segment
@@ -118,15 +130,22 @@ class AudioTimeline:
         stamp = AudioChunkTimestamp(
             output_id=self.output_id,
             sequence=self.sequence,
-            pts_samples=self.sent_samples,
+            pts_samples=self.generated_samples,
             frame_count=frame_count,
             sample_rate=self.sample_rate,
         )
         self.sequence += 1
-        self.sent_samples += frame_count
-        if frame_count and self._first_audio_at is None:
-            self._first_audio_at = time.monotonic()
+        self.generated_samples += frame_count
+        if not self.track_delivery:
+            self.mark_sent(frame_count)
         return stamp
+
+    def mark_sent(self, frame_count: int) -> None:
+        """Record successful transport delivery, independently of generated PCM."""
+        self.sent_samples = min(self.generated_samples,
+                                self.sent_samples + max(0, int(frame_count)))
+        if self.sent_samples and self._first_audio_at is None:
+            self._first_audio_at = time.monotonic()
 
     def add_segment_timestamps(self, segment_id: int,
                                timestamps: tuple[TextTimestamp, ...]) -> None:
@@ -184,7 +203,7 @@ class AudioTimeline:
         segment = self._segment_by_id.get(segment_id)
         if segment is None or segment.audio_end_samples is not None:
             return
-        segment.audio_end_samples = self.sent_samples
+        segment.audio_end_samples = self.generated_samples
         segment.complete = bool(complete)
         duration = segment.audio_end_samples - segment.audio_start_samples
         units = _range_cost(self.generated_text, segment.text_start, segment.text_end)
@@ -200,6 +219,8 @@ class AudioTimeline:
 
     def update_checkpoint(self, rendered_samples: int, sample_rate: int,
                           state: str = "playing") -> bool:
+        if self._frozen_samples is not None:
+            return False
         try:
             rate = max(1, int(sample_rate or self.sample_rate))
         except (TypeError, ValueError, OverflowError):
@@ -209,25 +230,38 @@ class AudioTimeline:
         except (TypeError, ValueError, OverflowError):
             rendered = 0
         converted = round(rendered * self.sample_rate / rate)
-        self.rendered_samples = min(self.sent_samples,
+        self.rendered_samples = min(self.generated_samples if self.track_delivery else self.sent_samples,
                                     max(self.rendered_samples, converted))
         self.checkpoint_seen = True
         self.playback_state = state or "playing"
         if self.playback_state == "drained":
-            self.rendered_samples = self.sent_samples
+            if not self.track_delivery:
+                self.rendered_samples = self.sent_samples
             self._playback_done.set()
         elif self.playback_state == "interrupted":
             self._playback_done.set()
         return True
 
     def assume_drained(self) -> None:
+        if self.track_delivery:
+            self.freeze_playback()
+            self._playback_done.set()
+            return
         self.rendered_samples = self.sent_samples
         self.playback_state = "drained"
         self._playback_done.set()
 
     def mark_interrupted(self) -> None:
+        self.freeze_playback()
+        self.interrupted = True
         self.playback_state = "interrupted"
         self._playback_done.set()
+
+    def freeze_playback(self) -> None:
+        """Freeze both sample and text cutoffs before cancellation can change alignment."""
+        if self._frozen_samples is None:
+            self._frozen_samples = self._effective_rendered_samples()
+            self._frozen_text = self.heard_text()
 
     async def wait_playback_done(self) -> None:
         await self._playback_done.wait()
@@ -237,7 +271,9 @@ class AudioTimeline:
         return self._playback_done.is_set()
 
     def _effective_rendered_samples(self) -> int:
-        if self.checkpoint_seen or self._first_audio_at is None:
+        if self._frozen_samples is not None:
+            return self._frozen_samples
+        if self.track_delivery or self.checkpoint_seen or self._first_audio_at is None:
             return min(self.sent_samples, self.rendered_samples)
         elapsed = max(0.0, time.monotonic() - self._first_audio_at
                       - self.prebuffer_seconds)
@@ -253,6 +289,8 @@ class AudioTimeline:
         if rendered <= segment.audio_start_samples:
             return segment.text_start
         audio_end = segment.audio_end_samples
+        if audio_end is not None and audio_end <= segment.audio_start_samples:
+            return segment.text_start
         if segment.complete and audio_end is not None and rendered >= audio_end:
             return segment.text_end
         if segment.alignments:
@@ -270,12 +308,15 @@ class AudioTimeline:
             total = _range_cost(self.generated_text, segment.text_start, segment.text_end)
             return _prefix_end(self.generated_text, segment.text_start,
                                segment.text_end, total * max(0.0, min(1.0, fraction)))
-        seconds = (rendered - segment.audio_start_samples) / self.sample_rate
+        seconds = ((min(rendered, audio_end) if audio_end is not None else rendered)
+                   - segment.audio_start_samples) / self.sample_rate
         return _prefix_end(
             self.generated_text, segment.text_start, segment.text_end,
             seconds * self.rate_estimator.value)
 
     def heard_text(self) -> str:
+        if self._frozen_text is not None:
+            return self._frozen_text
         if not self.generated_text:
             return ""
         rendered = self._effective_rendered_samples()
@@ -296,7 +337,7 @@ class AudioTimeline:
                 if rendered <= segment.audio_start_samples:
                     break
                 text_end = max(text_end, self._segment_text_end(segment, rendered))
-                if (segment.audio_end_samples is None
+                if (not segment.complete or segment.audio_end_samples is None
                         or rendered < segment.audio_end_samples):
                     break
             return self.generated_text[:text_end].rstrip()

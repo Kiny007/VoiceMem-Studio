@@ -14,7 +14,7 @@ let launcher, studio, current = { ...runtime.DEFAULTS }, attempt, generation = 0
 let status = { kind: 'idle', message: '连接已运行的服务，或启动本机 Docker。' };
 let writes = Promise.resolve();
 let quitting = false;
-let pet, petEnabled = true;
+let pet, petEnabled = true, ownedBackend;
 const microphoneGrants = new Set();
 
 async function showPet() {
@@ -36,6 +36,11 @@ function cancelConnection() {
   attempt = undefined;
 }
 
+function backendExitError(result) {
+  if (result.error) return new Error(`本机后端启动失败：${result.error.message}`);
+  return new Error(`本机后端已退出${result.code === null ? '' : `，状态码 ${result.code}`}${result.signal ? `（${result.signal}）` : ''}。`);
+}
+
 function assertLauncher(event) {
   if (!launcher || launcher.isDestroyed() || event.sender !== launcher.webContents
       || event.senderFrame !== launcher.webContents.mainFrame || event.senderFrame.url !== launcherUrl) {
@@ -50,7 +55,7 @@ function lockNavigation(window, allowed) {
   window.webContents.on('will-attach-webview', event => event.preventDefault());
 }
 
-async function showLauncher() {
+async function showLauncher(visible = true) {
   if (launcher && !launcher.isDestroyed()) { launcher.show(); launcher.focus(); return launcher; }
   const window = new BrowserWindow({
     width: 1020, height: 730, minWidth: 800, minHeight: 620, title: 'VoiceMem Studio · 配置设置',
@@ -63,7 +68,7 @@ async function showLauncher() {
   window.webContents.session.setPermissionCheckHandler(() => false);
   window.on('closed', () => { if (launcher === window) launcher = undefined; cancelConnection(); });
   await window.loadURL(launcherUrl);
-  if (!window.isDestroyed()) window.show();
+  if (visible && !window.isDestroyed()) window.show();
   return window;
 }
 
@@ -101,8 +106,8 @@ async function openStudio(url, ownGeneration) {
   const studioSession = session.fromPartition(`persist:studio-${new URL(url).host}`);
   installPermissions(studioSession);
   const window = new BrowserWindow({
-    width: 1440, height: 920, minWidth: 1080, minHeight: 680, title: 'VoiceMem Studio',
-    backgroundColor: '#212121', icon, show: false,
+    width: 680, height: 430, minWidth: 480, minHeight: 380, title: 'VoiceMem Studio',
+    backgroundColor: '#f7f8fa', icon, show: false,
     webPreferences: { session: studioSession, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   let opened = false;
@@ -111,6 +116,19 @@ async function openStudio(url, ownGeneration) {
   pet?.close();
   previous?.destroy();
   lockNavigation(window, destination => runtime.sameOrigin(destination, url));
+  let choosingMode = true;
+  window.webContents.on('did-navigate', (_event, destination) => {
+    const pathname = new URL(destination).pathname;
+    const home = ['/', '/index.html', '/ui/', '/ui/index.html'].includes(pathname);
+    if (home === choosingMode) return;
+    choosingMode = home;
+    if (window.isFullScreen()) window.setFullScreen(false);
+    if (window.isMaximized()) window.unmaximize();
+    window.setMinimumSize(home ? 480 : 1080, home ? 380 : 680);
+    window.setSize(home ? 680 : 1440, home ? 430 : 920);
+    window.center();
+    if (home) pet?.close(); else void showPet();
+  });
   window.webContents.on('page-title-updated', event => event.preventDefault());
   window.webContents.on('render-process-gone', () => {
     if (studio === window && !quitting) {
@@ -131,7 +149,6 @@ async function openStudio(url, ownGeneration) {
     window.show();
     publish('connected', '已连接。');
     if (launcher && !launcher.isDestroyed()) launcher.hide();
-    void showPet();
   } catch (error) {
     if (!window.isDestroyed()) window.destroy();
     throw new Error(`无法加载 Studio 页面：${error.message}`);
@@ -172,6 +189,52 @@ async function connect(value, persist = true) {
   } catch (error) {
     if (ownGeneration !== generation || control.signal.aborted) return;
     publish('error', error.message || '连接失败，请检查服务地址。');
+    void showLauncher();
+  } finally {
+    if (ownGeneration === generation) attempt = undefined;
+  }
+}
+
+async function connectManaged(config) {
+  cancelConnection();
+  const ownGeneration = generation;
+  const control = new AbortController();
+  attempt = control;
+  current = { ...runtime.DEFAULTS };
+  try {
+    ownedBackend?.stop();
+    publish('connecting', `正在启动本机 ${process.platform === 'darwin' ? 'MLX' : 'WSL2/CUDA'} 后端…`);
+    const backend = await runtime.startManagedBackend(config.projectDir, config.provider, {
+      signal: control.signal,
+    });
+    ownedBackend = backend;
+    let ready = false;
+    const exitWatch = backend.exited.then(result => {
+      if (!ready) throw backendExitError(result);
+      if (ownedBackend === backend) ownedBackend = undefined;
+      if (!quitting && studio && !studio.isDestroyed()) {
+        studio.destroy();
+        publish('error', backendExitError(result).message);
+        void showLauncher();
+      }
+    });
+    publish('connecting', `正在准备 ${config.provider} 后端，首次模型预热可能需要几分钟…`);
+    await Promise.race([
+      runtime.waitForStudio(backend.url, {
+        signal: control.signal,
+        onWait: seconds => publish('connecting', `等待本机后端就绪 · ${seconds} 秒。首次模型预热可能需要几分钟。`),
+      }),
+      exitWatch,
+    ]);
+    ready = true;
+    control.signal.throwIfAborted();
+    await openStudio(backend.url, ownGeneration);
+  } catch (error) {
+    if (ownGeneration !== generation || control.signal.aborted) return;
+    ownedBackend?.stop();
+    ownedBackend = undefined;
+    publish('error', error.message || '本机后端启动失败。');
+    void showLauncher();
   } finally {
     if (ownGeneration === generation) attempt = undefined;
   }
@@ -188,6 +251,11 @@ function installMenu() {
         if (petEnabled) void showPet(); else pet?.close();
       } },
       { label: '找回桌宠位置', click: () => pet?.resetPosition() },
+      { label: '桌宠大小', submenu: [
+        { label: '缩小', click: () => pet?.resize(-1) },
+        { label: '放大', click: () => pet?.resize(1) },
+        { label: '恢复原始大小', click: () => pet?.resetSize() },
+      ] },
       { type: 'separator' }, { role: 'quit', label: '退出' },
     ] },
     { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
@@ -198,7 +266,7 @@ function installMenu() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { const window = studio || launcher; if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });
-  app.on('before-quit', () => { quitting = true; cancelConnection(); pet?.close(); });
+  app.on('before-quit', () => { quitting = true; cancelConnection(); ownedBackend?.stop(); pet?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('activate', () => {
     if (studio && !studio.isDestroyed()) studio.show();
@@ -206,8 +274,11 @@ else {
   });
   app.whenReady().then(async () => {
     nativeTheme.themeSource = 'dark';
-    let configError;
-    try { current = await runtime.loadSettings(configurationFile); } catch (error) { configError = error.message; }
+    let configError, managed;
+    try {
+      managed = runtime.managedLaunch(process.env);
+      current = managed ? { ...runtime.DEFAULTS } : await runtime.loadSettings(configurationFile);
+    } catch (error) { configError = error.message; }
     installMenu();
     try {
       pet = createPet({ onHidden: () => {
@@ -241,9 +312,18 @@ else {
       void connect(next);
       return true;
     });
-    ipcMain.handle('studio-desktop:cancel', event => { assertLauncher(event); cancelConnection(); publish('idle', '已取消等待；已经启动的 Docker 服务不会被停止。'); });
-    await showLauncher();
-    if (configError) publish('error', configError);
+    ipcMain.handle('studio-desktop:cancel', event => {
+      assertLauncher(event);
+      cancelConnection();
+      if (managed) {
+        ownedBackend?.stop();
+        ownedBackend = undefined;
+        publish('idle', '已取消本机后端启动。');
+      } else publish('idle', '已取消等待；已经启动的 Docker 服务不会被停止。');
+    });
+    await showLauncher(false);
+    if (configError) { publish('error', configError); void showLauncher(); }
+    else if (managed) void connectManaged(managed);
     else void connect(current, false);
   }).catch(error => { dialog.showErrorBox('VoiceMem Studio 启动失败', error.message); app.quit(); });
 }

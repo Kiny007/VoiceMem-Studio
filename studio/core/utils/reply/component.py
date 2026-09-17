@@ -104,7 +104,9 @@ class Reply:
         memory_vm = memory_vm or self.vm
         context_space = context_space or self.ACTIVE_SPACE
         _entry = time.monotonic()
-        await send({"type": "user_transcript", "text": pending.text})
+        if not getattr(pending, "transcript_managed", False):
+            from studio.core.utils.contracts.component import input_transcript_event
+            await send(input_transcript_event(pending))
 
         if pending.replay:
             self._note_replay(pending.replay)
@@ -339,6 +341,15 @@ class Reply:
                 timeline.append_text(d)
                 await send({"type": "answer_delta", "text": d})
                 text_queue.put_nowait(d)
+            # Normal EOF resolves an unrecognized short prefix as plain speech.
+            # Keep this outside finally so cancellation/errors never flush it.
+            if tone["head"] and tone["buf"].strip():
+                d = tone["buf"]
+                tone["head"], tone["buf"] = False, ""
+                reply += d
+                timeline.append_text(d)
+                await send({"type": "answer_delta", "text": d})
+                text_queue.put_nowait(d)
         except asyncio.CancelledError:
             interrupted = True
         except Exception:
@@ -366,10 +377,13 @@ class Reply:
             else:
 
                 self.hot_path_exit(_hot)
-                self._kick_acoustic(send, pending.audio_path or "")
+                if not getattr(timeline, "context_managed", False):
+                    self._kick_acoustic(send, pending.audio_path or "")
                 timeline.mark_generation_complete()
                 try:
                     await send({"type": "answer_done", "output_id": timeline.output_id})
+                    if getattr(timeline, "context_managed", False):
+                        return
                     timeout = max(2.0, min(
                         60.0, timeline.sent_samples / timeline.sample_rate + 2.0))
                     await asyncio.wait_for(timeline.wait_playback_done(), timeout=timeout)
@@ -379,6 +393,10 @@ class Reply:
                     interrupted = True
                     await _drop_pipeline()
 
+        if getattr(timeline, "context_managed", False):
+            if interrupted:
+                timeline.mark_interrupted()
+            return
         context_reply = timeline.heard_text() if interrupted else reply
         if interrupted and self.BARGE_DEBUG:
             print(f"[context] 打断于 {timeline.rendered_ms()}ms，保留回复 "

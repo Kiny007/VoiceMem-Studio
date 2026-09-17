@@ -25,6 +25,21 @@ class Pending:
     # configured turn confirmation and final-ASR work before reply handoff.
     speech_end: float = 0.0
 
+    # Display identity is independent of reply output and persistent history IDs.
+    input_turn_id: str = ""
+    replace_input_turn_id: str = ""
+    transcript_managed: bool = False
+
+
+def input_transcript_event(pending) -> dict:
+    """Build a display-only confirmed transcript, retaining legacy callers."""
+    message = {"type": "user_transcript", "text": pending.text}
+    for key in ("input_turn_id", "replace_input_turn_id"):
+        value = getattr(pending, key, "")
+        if value:
+            message[key] = value
+    return message
+
 class ReplySink:
     """Buffer ordered speculative events and PCM until final turn confirmation."""
 

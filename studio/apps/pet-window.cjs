@@ -8,10 +8,10 @@ const { observerUrl, resourceAllowed, trustedSender } = require('./pet-policy.cj
 /** Own one optional pet window; observation never opens a conversation or captures audio. */
 function createPet({ onHidden = () => {} } = {}) {
   const root = path.join(__dirname, '.pet-runtime');
-  const { SIZES, selectPose, fitBounds } = require(path.join(root, 'state.cjs'));
+  const { SIZES, RESIZE_CORNERS, clampScale, scaledSize, resizeFromCorner, selectPose, fitBounds } = require(path.join(root, 'state.cjs'));
   const positionFile = path.join(app.getPath('userData'), 'pet-position.json');
   const petSession = session.fromPartition('studio-pet');
-  let window, anchor, dragging, timer, page = '', observer = '', mode = 'lie';
+  let window, anchor, dragging, resizing, timer, page = '', observer = '', mode = 'lie', scale = 1, manuallyCollapsed = false;
   let writes = Promise.resolve();
   petSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   petSession.setPermissionCheckHandler(() => false);
@@ -25,22 +25,42 @@ function createPet({ onHidden = () => {} } = {}) {
     clearTimeout(timer);
     timer = undefined;
     if (!anchor) return;
-    const value = JSON.stringify(anchor);
+    const value = JSON.stringify({ ...anchor, scale });
     writes = writes.catch(() => {}).then(() => fs.writeFile(positionFile, value, { mode: 0o600 }))
       .catch(error => console.error('[desktop-pet] Cannot save position:', error.message));
   }
-  function setMode(next) {
-    if (!window || window.isDestroyed() || !Object.hasOwn(SIZES, next)) return;
-    mode = next;
+  function scheduleSave() { clearTimeout(timer); timer = setTimeout(save, 250); }
+  function layout() {
+    if (!window || window.isDestroyed()) return;
     window.setIgnoreMouseEvents(false);
-    window.setBounds(fitBounds(anchor, SIZES[mode], screen.getDisplayNearestPoint(anchor).workArea));
+    const bounds = fitBounds(anchor, scaledSize(mode, scale), screen.getDisplayNearestPoint(anchor).workArea);
+    window.setBounds(bounds);
+    anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+  }
+  function setMode(next) {
+    if (!window || window.isDestroyed() || !Object.hasOwn(SIZES, next) || mode === next) return;
+    mode = next;
+    if (mode === 'dot') { if (dragging || resizing) scheduleSave(); dragging = resizing = undefined; }
+    layout();
     window.webContents.send('studio-pet:mode', mode);
+  }
+  function setScale(next) {
+    scale = clampScale(next);
+    layout();
+    window?.webContents.send('studio-pet:scale', scale);
+    scheduleSave();
+  }
+  function resize(step) { if (step === -1 || step === 1) setScale(Math.round((scale + step * .1) * 100) / 100); }
+  function collapse() { manuallyCollapsed = true; setMode('dot'); }
+  function toggle() {
+    if (mode === 'dot') { manuallyCollapsed = false; setMode(selectPose()); }
+    else collapse();
   }
   function close() {
     observer = '';
     page = '';
-    dragging = undefined;
-    if (timer) save();
+    if (timer || dragging || resizing) save();
+    dragging = resizing = undefined;
     const previous = window;
     window = undefined;
     previous?.destroy();
@@ -54,11 +74,17 @@ function createPet({ onHidden = () => {} } = {}) {
     if (!trustedSender(event, window, page)) throw new Error('Pet IPC is restricted to the local pet window.');
     return mode;
   });
-  listen('toggle', () => setMode(mode === 'dot' ? selectPose() : 'dot'));
-  listen('collapse', () => setMode('dot'));
-  listen('activate', pose => { if (['sit', 'lie'].includes(pose) && mode !== pose) setMode(pose); else if (mode === 'dot') setMode('lie'); });
-  listen('pointer', hit => { if (!dragging && typeof hit === 'boolean') window.setIgnoreMouseEvents(!hit, { forward: true }); });
-  listen('drag-start', () => { dragging = { cursor: screen.getCursorScreenPoint(), bounds: window.getBounds() }; });
+  ipcMain.handle('studio-pet:initial-scale', event => {
+    if (!trustedSender(event, window, page)) throw new Error('Pet IPC is restricted to the local pet window.');
+    return scale;
+  });
+  listen('toggle', toggle);
+  listen('collapse', collapse);
+  listen('activate', pose => { if (manuallyCollapsed) return; if (['sit', 'lie'].includes(pose)) setMode(pose); else if (pose === undefined && mode === 'dot') setMode('lie'); });
+  listen('resize', resize);
+  listen('reset-size', () => setScale(1));
+  listen('pointer', hit => { if (!dragging && !resizing && typeof hit === 'boolean') window.setIgnoreMouseEvents(!hit, { forward: true }); });
+  listen('drag-start', () => { resizing = undefined; dragging = { cursor: screen.getCursorScreenPoint(), bounds: window.getBounds() }; window.setIgnoreMouseEvents(false); });
   listen('drag-move', () => {
     if (!dragging) return;
     const point = screen.getCursorScreenPoint(), bounds = dragging.bounds;
@@ -67,8 +93,25 @@ function createPet({ onHidden = () => {} } = {}) {
     window.setBounds(fitted);
     anchor = { x: fitted.x + fitted.width, y: fitted.y + fitted.height };
   });
-  listen('drag-end', () => { dragging = undefined; clearTimeout(timer); timer = setTimeout(save, 250); });
-  screen.on('display-removed', () => setMode(mode));
+  listen('drag-end', () => { if (dragging) { dragging = undefined; scheduleSave(); } });
+  listen('resize-start', (corner = 'se') => {
+    if (mode === 'dot' || !Object.hasOwn(RESIZE_CORNERS, corner)) return;
+    dragging = undefined;
+    resizing = { cursor: screen.getCursorScreenPoint(), bounds: window.getBounds(), scale, corner };
+    window.setIgnoreMouseEvents(false);
+  });
+  listen('resize-move', () => {
+    if (!resizing) return;
+    const point = screen.getCursorScreenPoint(), start = resizing;
+    const result = resizeFromCorner(mode, start, point.x - start.cursor.x, point.y - start.cursor.y, screen.getDisplayNearestPoint(point).workArea);
+    const bounds = result.bounds;
+    scale = result.scale;
+    window.setBounds(bounds);
+    anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+    window.webContents.send('studio-pet:scale', scale);
+  });
+  listen('resize-end', () => { if (resizing) { resizing = undefined; scheduleSave(); } });
+  screen.on('display-removed', () => { layout(); scheduleSave(); });
 
   async function open(origin) {
     const next = observerUrl(origin);
@@ -77,11 +120,13 @@ function createPet({ onHidden = () => {} } = {}) {
     anchor ||= home();
     observer = next;
     mode = 'lie';
+    manuallyCollapsed = false;
     const url = pathToFileURL(path.join(root, 'index.html'));
     url.searchParams.set('ws', observer);
+    url.searchParams.set('layout', 'portrait');
     page = url.href;
     const created = new BrowserWindow({
-      ...fitBounds(anchor, SIZES[mode], screen.getDisplayNearestPoint(anchor).workArea),
+      ...fitBounds(anchor, scaledSize(mode, scale), screen.getDisplayNearestPoint(anchor).workArea),
       title: '雾铃 · VoiceMem Studio', frame: false, transparent: true, alwaysOnTop: true,
       skipTaskbar: true, resizable: false, maximizable: false, fullscreenable: false, show: false, hasShadow: false,
       webPreferences: { preload: path.join(__dirname, 'pet-preload.cjs'), session: petSession,
@@ -90,7 +135,7 @@ function createPet({ onHidden = () => {} } = {}) {
     window = created;
     created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     for (const name of ['will-navigate', 'will-redirect', 'will-attach-webview']) created.webContents.on(name, event => event.preventDefault());
-    created.on('closed', () => { if (window === created) { window = undefined; observer = ''; onHidden(); } });
+    created.on('closed', () => { if (window === created) { if (timer || dragging || resizing) save(); dragging = resizing = undefined; window = undefined; observer = ''; onHidden(); } });
     try {
       await created.loadURL(page);
       if (window === created && !created.isDestroyed()) created.showInactive();
@@ -104,9 +149,10 @@ function createPet({ onHidden = () => {} } = {}) {
     try {
       const saved = JSON.parse(await fs.readFile(positionFile, 'utf8'));
       if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) anchor = { x: saved.x, y: saved.y };
+      scale = clampScale(saved.scale);
     } catch (error) { if (error.code !== 'ENOENT') console.error('[desktop-pet] Ignoring invalid saved position.'); }
   }
-  return { open, close, restorePosition, resetPosition: () => { anchor = home(); setMode(mode); save(); } };
+  return { open, close, restorePosition, resize, resetSize: () => setScale(1), resetPosition: () => { anchor = home(); layout(); save(); } };
 }
 
 module.exports = { createPet };

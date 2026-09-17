@@ -41,6 +41,10 @@ class MLXThinkingRouter(QwenThinkingRouter):
         self._ensure_model_source()
         return gpu_loop().call(lambda: self._predict_on_gpu(system, examples, prompt))
 
+    def _short_text(self, system, prompt, max_tokens, cancelled, deadline):
+        from .short_text import mlx_short_text
+        return mlx_short_text(self, system, prompt, max_tokens, cancelled, deadline)
+
     def _predict_on_gpu(self, system: str, examples, prompt: str) -> str:
         import mlx.core as mx
         from mlx_lm.models.cache import make_prompt_cache

@@ -1,3 +1,27 @@
+# VoiceMem Studio App
+
+## 双风格 UI 与 API 选择
+
+源码运行只需要启动 App：
+
+```bash
+cd studio/apps
+npm start
+```
+
+启动前会检查 Electron、PixiJS 和 Pixi Live2D。缺失时自动按 `package-lock.json` 执行
+`npm ci --include=dev` 下载锁定版本；依赖完整时跳过安装。首次运行需要能够访问 npm registry。
+
+终端先选择 DeepSeek、Qwen、OpenAI；Apple Silicon Mac 还可选择本地 MLX。随后输入对应 API Key，输入内容以 `*` 隐藏；直接回车会沿用当前环境变量或项目根目录的 `.env`。App 会自动启动 macOS MLX 或 Windows WSL2/CUDA 后端、等待模型就绪，然后直接进入风格选择页。API Key 只传给本次 App 和后端进程，不写入连接设置。
+
+首页复用原版 `index.html`，分别进入 `technical.html` 科技风和 `digital.html` 数字人。语言、UI 字号和内容字号在进入后的「设置」中调整。也可单独打开已运行后端的 `http://localhost:8787`。
+
+UI 源码在 `studio/apps/ui/`，由后端 `/ui/` 提供，App 和浏览器共用。请使用更新后的后端。原界面保留在 `/legacy`。
+两种风格的文字、ASR、回复、情绪和召回面板使用现有服务事件；脑图保留视觉导航示意，不代表真实节点数量。聊天列表暂存在当前页面，刷新重置；切换历史条目后的新输入会建立新后端会话。原始 `voicemem_qa` 项目保持原样。
+回复旁的小喇叭会重播后端为该条回复实际生成的语音，包括已经播放的打断前缀；音频仅限当前页面并保存在有上限的内存缓存中，刷新后清空。
+
+---
+
 # VoiceMem Studio 桌面 App
 
 主窗口直接加载 Studio 已有的 Web 页面，界面、语音协议、记忆面板与 Web 版一致。
@@ -7,10 +31,7 @@
 
 ## 桌面方案
 
-[DeepSeek 官方 Desktop](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md)
-也使用 Electron 复用 Web UI，内置 Node 后端，通过管道、IPC 和自定义协议连接，不开放 Web 监听端口。
-本项目采用相同的“桌面壳复用 Web UI”边界，但保留已有 Python/CUDA Docker 和原生 MLX 后端，
-通过原有 HTTP/WebSocket 协议连接，不迁移后端通信协议。
+本项目通过原有 HTTP/WebSocket 协议连接，不迁移后端通信协议。
 平台分工、配置边界、目标启动流程和实现状态见 [平台设计](PLATFORMS.md)。
 
 ## 直接运行
@@ -22,24 +43,28 @@ npm ci
 npm start
 ```
 
-默认连接 `http://127.0.0.1:8787`。启动时显示黑灰配置页，服务就绪后自动打开主窗口。
-服务仍在预热时最多等待三分钟；超时可以重试，不会停止后端。
+`npm start` 先补齐缺失的 Node 运行依赖，再自动使用项目根目录已有的 Python 环境：macOS 为 `.venv`，Windows 为 WSL2 中的 `.venv-cuda`。启动时配置页保持隐藏，服务就绪后直接打开风格选择页。
+服务仍在预热时最多等待三分钟；App 退出时会停止它本次启动的后端。
+它不会自动安装 Python、WSL、驱动或 Python/模型依赖；这些后端环境需要事先按部署文档准备好。
 通过菜单 **Studio → 配置设置**（`Ctrl/Cmd+,`）更改地址。第一次开始语音时会请求麦克风授权。
 
 ## App 内置桌宠
 
-连接成功后默认显示雾铃，作为同一个 App 的透明置顶窗口，不再单独启动 Electron 或安装 `pet` 依赖。
+连接成功后默认显示雾铃，作为同一个 App 的透明置顶窗口，不再单独启动 Electron 或安装 `pet` 目录的依赖；App 自己的开发依赖包含打包所需的 Pixi 运行库。
 菜单 **Studio → 显示桌宠** 控制本次运行中的显示/隐藏，不退出主窗口。
-**找回桌宠位置** 将它移回主屏幕。拖拽、双击收起和唤醒继续使用原版交互。
+**找回桌宠位置** 将它移回主屏幕。按住人物或背景拖动窗口，
+拖动任意一个角等比例缩放（40%–150%）。界面没有顶部控制条；也可使用 **Studio → 桌宠大小** 恢复原始大小。
+位置与大小自动保存，打开主界面时保持显示，由你手动缩小或移开以免遮住字幕。
+双击人物或背景、或按 Escape 收成小点；语音事件不会自动展开，点击小点恢复之前的大小。
 
 - 原版 `pet/` 的渲染、动画与 `voicemem-link.js` 保留为唯一来源，不修改它的独立启动方式。
 - 桌宠通过当前后端的 `/ws-pet` 只读观察真实播放进度、附和、打断和断线，不采集麦克风、不创建第二段对话。
 - 切换服务会关闭旧桌宠连接；关闭 Studio 主窗口或退出 App 会关闭内置桌宠，Docker 后端继续运行。
-- 打包包含原版 `avatar-rig.js`、`scene.js`、四张人物图片及窗帘背景；使用 Canvas，不依赖 Pixi、Cubism、WASM 或 CDN。
-- 保留 `sit` / `lie` 作为交互/休息状态，尺寸由原版 `state.cjs` 决定；附和触发歪头笑，嘴型仍跟随实际播放。
+- 打包包含 Cubism 4 Live2D 模型、Pixi 运行库、原生动作、`scene.js` 和窗帘背景，不再包含旧的 Canvas/PNG 人物。
+- 保留 `sit` / `lie` 作为交互/休息状态，使用 3:4 竖屏构图；双模式页面把实际播放音量发送到 `/ws-pet`，由 RMS 驱动嘴型。
 - 源码运行和打包自动执行 `prepare:pet`，按白名单生成忽略于 Git 的 `.pet-runtime/`。
   不打包 `pet/checks`、旧模型、旧第三方运行库或第二份 Electron。
-- 检测到旧 Live2D 构建缓存时，先移到 `.pet-runtime.previous-*/resources/` 再生成新资源；备份不进入 Git 或安装包。
+- 检测到旧 Canvas 或 Live2D 构建缓存时，先移到 `.pet-runtime.previous-*/resources/` 再生成新资源；备份不进入 Git 或安装包。
   不认识的额外文件会使准备步骤报错，不会被删除或意外打包。
 
 Linux/WSL 后端不会自动启动桌宠，Docker 也保留 `STUDIO_DESKTOP_PET=0`。
@@ -63,8 +88,8 @@ STUDIO_DESKTOP_PET=0 python -m studio
 - 使用 `up -d --no-build --no-recreate --pull never studio`，不自动构建、拉取镜像或重建已有容器。
 - 退出 App、取消等待均不停止容器，不删除模型、记忆或卷。
 - 自动启动不操作远程 Docker context。远程 GPU 服务器请通过 HTTPS 或 SSH 转发连接。
-- Mac 的 MLX 后端保持原生启动；Mac App 可以连接它，也可以连接远程 GPU 服务。
-- WSL 内原生 Python 后端目前先在 WSL 中启动，Windows App 再连接 localhost；直接管理 `wsl.exe` 的适配尚未实现。
+- `npm start` 的本机启动路径不使用 Docker：Mac 启动原生 MLX，Windows 通过 `wsl.exe` 启动 WSL2/CUDA。
+- 本节的 Docker 选项保持原有 Compose 行为，供已有镜像和共享容器的连接方式使用。
 - Windows named-pipe 与命令参数已做模拟测试，完整 WSL/GPU 流程仍需 Windows 实机验收。
 
 如果镜像还没构建，请先按 [Docker 部署说明](../../docker/README.md) 完成环境准备。
@@ -93,7 +118,7 @@ Mac 正式分发需开发者签名和公证；仓库提供麦克风用途说明�
 ## 安全与数据
 
 - 远程地址必须使用 HTTPS；HTTP 仅允许回环地址。不要通过关闭证书校验或 Web 安全性连接远程服务。
-- 服务地址仅支持根地址，不带用户名、密码、路径或查询参数。LLM API Key 仍配置在后端。
+- 服务地址仅支持根地址，不带用户名、密码、路径或查询参数。`npm start` 输入的 LLM API Key 只通过进程环境传给本机后端；远程后端仍自行管理密钥。
 - 主界面没有 Node.js 或本机 Docker IPC 权限，仅本地配置页有受限的设置接口。
 - 桌宠只有受限窗口操作接口，没有连接设置、Docker 或 Node 权限。资源请求限于内置文件和当前 `/ws-pet`。
 - 麦克风仅对配置的服务主页面授权，不授权摄像头、屏幕录制或第三方 iframe。
@@ -111,7 +136,7 @@ npm test
 
 Linux 可用 `node scripts/smoke.cjs` 在 Xvfb 中验证真实窗口。它只使用临时假后端和假 Docker，
 不调用真实容器、不打开个人记忆、不采集麦克风；截图留在其输出的临时目录。
-它加载实际 Canvas 人物和场景，用合成的 `/ws-pet` 事件验证嘴型、附和歪头笑、打断、暂停/断线、服务切换及隐藏窗口。
+它加载实际 Live2D 人物和场景，用合成的 `/ws-pet` 事件验证嘴型、原生动作、打断、暂停/断线、服务切换及隐藏窗口。
 `node scripts/smoke.cjs --asar` 先按打包白名单生成临时 ASAR，再验证归档内的共享客户端和资源；不生成 Linux 安装包。
 `--keep-pet-on-exit` 额外验证关闭主窗口时仍显示的桌宠一起退出。
 可以用 `VOICEMEM_DESKTOP_BINARY` 指向已打包的程序，`VOICEMEM_XVFB` 指定 Xvfb。

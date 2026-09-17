@@ -5,6 +5,11 @@ const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const DEFAULTS = Object.freeze({ serverUrl: 'http://127.0.0.1:8787', autoStartDocker: false, projectDir: '' });
+const MANAGED_PROVIDERS = new Set(['deepseek', 'qwen', 'openai', 'local']);
+const PROVIDER_CREDENTIALS = Object.freeze({
+  deepseek: 'DEEPSEEK_API_KEY', qwen: 'DASHSCOPE_API_KEY',
+  openai: 'OPENAI_API_KEY', local: 'OPENAI_API_KEY',
+});
 
 function loopback(hostname) {
   return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
@@ -71,9 +76,91 @@ function command(file, args, { cwd, signal, timeoutMs = 60000, spawnImpl = spawn
     const child = spawnImpl(file, args, { cwd, signal: control, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', data => { output = (output + data.toString()).slice(-16000); });
     child.stderr.on('data', data => { errors = (errors + data.toString()).slice(-16000); });
-    child.once('error', error => reject(error.code === 'ENOENT' ? new Error('找不到 Docker 命令，请先安装 Docker 和 Compose。') : error));
-    child.once('close', code => code === 0 ? resolve(output.trim()) : reject(new Error(errors.trim() || `Docker 命令退出，状态码 ${code}`)));
+    child.once('error', error => reject(error.code === 'ENOENT'
+      ? new Error(file === 'docker' ? '找不到 Docker 命令，请先安装 Docker 和 Compose。' : `找不到 ${file} 命令。`)
+      : error));
+    const label = file === 'docker' ? 'Docker' : file;
+    child.once('close', code => code === 0 ? resolve(output.trim()) : reject(new Error(errors.trim() || `${label} 命令退出，状态码 ${code}`)));
   });
+}
+
+function managedLaunch(env = process.env) {
+  const projectDir = String(env.VOICEMEM_DESKTOP_PROJECT_ROOT || '').trim();
+  const provider = String(env.VOICEMEM_DESKTOP_MANAGED_PROVIDER || '').trim().toLowerCase();
+  if (!projectDir && !provider) return null;
+  if (!path.isAbsolute(projectDir) || !MANAGED_PROVIDERS.has(provider)) {
+    throw new Error('App 本机后端启动配置无效，请重新运行 npm start。');
+  }
+  return { projectDir, provider };
+}
+
+function appendWslEnvironment(env, names) {
+  const entries = String(env.WSLENV || '').split(':').filter(Boolean);
+  for (const name of names) {
+    if (!entries.some(entry => entry.split('/')[0] === name)) entries.push(`${name}/u`);
+  }
+  return entries.join(':');
+}
+
+async function managedBackendCommand(directory, provider, {
+  platform = process.platform, env = process.env, signal, run = command,
+} = {}) {
+  if (!MANAGED_PROVIDERS.has(provider)) throw new Error(`不支持的回复 API：${provider}`);
+  if (platform === 'win32' && provider === 'local') throw new Error('本地 MLX 模型只支持 Apple Silicon macOS。');
+  if (!['darwin', 'win32'].includes(platform)) throw new Error('App 本机后端只支持 Windows 和 macOS。');
+  const root = await validateProject(directory);
+  const backend = platform === 'darwin' ? 'mlx' : 'cuda';
+  const args = ['-m', 'studio', '--backend', backend, '--llm', provider,
+    '--host', '127.0.0.1', '--port', '8787', '--verbose'];
+  const childEnv = { ...env, STUDIO_DESKTOP_PET: '0', PYTHONUNBUFFERED: '1' };
+  if (platform === 'darwin') {
+    const python = path.resolve(root, env.STUDIO_PYTHON || '.venv/bin/python');
+    try { await fs.access(python); }
+    catch { throw new Error(`找不到 macOS Studio Python 环境：${python}。请先完成 MLX 环境安装。`); }
+    return { file: python, args, cwd: root, env: childEnv, url: DEFAULTS.serverUrl };
+  }
+  let linuxRoot;
+  try {
+    linuxRoot = await run('wsl.exe', ['wslpath', '-a', root], { cwd: root, signal, timeoutMs: 10000 });
+  } catch (error) {
+    throw new Error(`无法进入 WSL2：${error.message}`);
+  }
+  if (!linuxRoot) throw new Error('WSL2 无法解析 VoiceMem-Studio 项目路径。');
+  const relativePython = String(env.STUDIO_WSL_PYTHON || '.venv-cuda/bin/python').replace(/\\/g, '/');
+  const python = relativePython.startsWith('/') ? relativePython : `${linuxRoot}/${relativePython}`;
+  const credential = PROVIDER_CREDENTIALS[provider];
+  childEnv.WSLENV = appendWslEnvironment(childEnv,
+    [credential, 'STUDIO_DESKTOP_PET', 'PYTHONUNBUFFERED']);
+  return {
+    file: 'wsl.exe', args: ['--cd', linuxRoot, '--exec', python, ...args],
+    cwd: root, env: childEnv, url: DEFAULTS.serverUrl,
+  };
+}
+
+async function startManagedBackend(directory, provider, {
+  signal, platform = process.platform, env = process.env, run = command, spawnImpl = spawn,
+} = {}) {
+  const specification = await managedBackendCommand(directory, provider, { signal, platform, env, run });
+  signal?.throwIfAborted();
+  let child;
+  try {
+    child = spawnImpl(specification.file, specification.args, {
+      cwd: specification.cwd, env: specification.env, shell: false,
+      windowsHide: true, stdio: 'inherit',
+    });
+  } catch (error) { throw new Error(`无法启动本机 Studio 后端：${error.message}`); }
+  let settled = false;
+  let finish;
+  const exited = new Promise(resolve => { finish = value => { if (!settled) { settled = true; resolve(value); } }; });
+  child.once('error', error => finish({ error }));
+  child.once('exit', (code, exitSignal) => finish({ code, signal: exitSignal }));
+  const stop = () => {
+    if (!settled && !child.killed) child.kill(platform === 'win32' ? undefined : 'SIGTERM');
+  };
+  const abort = () => stop();
+  if (signal) signal.addEventListener('abort', abort, { once: true });
+  void exited.then(() => signal?.removeEventListener('abort', abort));
+  return { ...specification, child, exited, stop };
 }
 
 function publishedUrl(output) {
@@ -131,8 +218,9 @@ async function waitForStudio(url, { signal, timeoutMs = 180000, intervalMs = 150
     onWait(Math.floor((Date.now() - started) / 1000));
     await delay(intervalMs, undefined, { signal });
   }
-  throw new Error(`服务尚未就绪，请检查 Docker 日志或稍后重试。${lastError?.message || ''}`);
+  throw new Error(`服务尚未就绪，请检查 Studio 后端日志或稍后重试。${lastError?.message || ''}`);
 }
 
 module.exports = { DEFAULTS, serverUrl, settings, sameOrigin, audioPermission, loadSettings, saveSettings,
-  validateProject, command, publishedUrl, startDocker, probe, waitForStudio };
+  validateProject, command, managedLaunch, appendWslEnvironment, managedBackendCommand,
+  startManagedBackend, publishedUrl, startDocker, probe, waitForStudio };

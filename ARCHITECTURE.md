@@ -35,7 +35,7 @@ flowchart LR
 
 ### Client plane
 
-Owned by `studio/web/voicemem.html` and the AudioWorklets:
+Owned by `studio/apps/ui/`, `studio/web/transport.py`, and the AudioWorklets:
 
 - microphone permission and browser audio graph;
 - browser acoustic echo cancellation;
@@ -142,7 +142,10 @@ moving model inference onto the event loop. GPU and Torch schedulers remain
 process-scoped. Speculative generation captures its memory instance and space
 before scheduling; cancellation also reaps pending route work.
 
-Startup defaults to DeepSeek reply, Breeze TTS, and the `studio-zh` Memory Space.
+Interactive startup without `--llm` asks for DeepSeek, Qwen, OpenAI, or an
+MLX-local reply model before loading inference. Explicit `--llm`, `--check`,
+realtime mode, and non-interactive commands never prompt. Non-interactive startup
+defaults to DeepSeek reply, Breeze TTS, and the `studio-zh` Memory Space.
 An explicit `--space` selects another existing or new space; stored language and
 memory data are preserved when the default selection changes.
 Qwen is selectable with `--llm qwen`: `qwen3.6-flash` uses the international
@@ -215,8 +218,30 @@ worker/epoch guards remain in VoiceMem because the memory package also uses them
 a backend deployment target, not a desktop release target. Windows runs capture,
 playback and the pet natively, while local CUDA inference belongs in WSL2 or its
 Docker backend. macOS uses native MLX or a remote service. Both clients share
-the same Web UI and observer contracts. The desktop client's main
-window loads the backend's existing Web page without a renderer fork. A local
+the same Web UI and observer contracts. The backend root serves the shared
+frontend from `studio/apps/ui/`, with assets under `/ui/`. Its first page reuses the original mode-selection homepage, with labeled
+image cards linking to the technical or digital-human visual style. Display
+settings live inside each style. `/legacy` retains the previous Studio renderer;
+`/classic` retains the older demo. The desktop opens this same root and keeps its
+connection configuration window hidden on a successful startup; connection errors
+reveal configuration. Desktop clients require the updated backend assets.
+
+`studio-client.js` owns one page-local WebSocket and AudioContext, reuses the
+existing capture and PCM AudioWorklets, and sends rendered-sample checkpoints,
+actual playback RMS levels, pause/resume, and filler completion on the existing
+protocol. The RMS event feeds the App-owned Live2D pet and is not treated as a
+playback checkpoint. The client retains a bounded, memory-only PCM cache for
+completed replies so the reply speaker control replays the audio that the
+backend actually generated. Interrupted replies retain only the source samples
+reported as rendered by the playback worklet. Replays do not emit playback
+checkpoints and the cache is discarded on page refresh. UI replies and
+perception come from backend events. Confirmed input IDs deduplicate transcripts
+and merge continuations; interruption uses the backend's heard prefix. Changing
+style, conversation, language, or leaving the page closes its connection. Chat
+lists are page-local and reset on refresh; opening a previous list item starts a
+new backend context for subsequent input. The supplied brain illustration is a
+memory-domain navigation diagram, not a count or topology of stored memories.
+The panels show real per-turn recall results without demo records or rule replies. A local
 configuration page owns the restricted settings IPC; the Studio renderer has no
 preload bridge or Node integration. Both renderers use context isolation and
 sandboxing. Microphone requests are limited to main-frame audio from the selected
@@ -224,7 +249,20 @@ origin and require user approval; remote connections require HTTPS, while HTTP
 is accepted only on loopback. Settings and browser state live in the desktop
 application-data directory, not in the backend's memory or credential files.
 
-On Windows, an opt-in configuration setting can start an existing local NVIDIA
+The source desktop entry (`npm start`) first verifies its locked Electron, PixiJS,
+and Pixi Live2D files. Missing files trigger `npm ci --include=dev`; a complete
+installation performs no package-manager or network work. It then owns an optional local backend lifecycle.
+Before Electron starts it asks for the reply provider and reads the matching API
+key with masked terminal input. The key is inherited only by Electron and the
+backend process; it is not written to desktop settings or command arguments.
+Electron starts `.venv/bin/python` with the MLX backend on macOS, or invokes
+`.venv-cuda/bin/python` through `wsl.exe` with the CUDA backend on Windows. Both
+paths bind loopback port 8787, disable the backend-owned pet, wait for the shared
+Web page, and then open the style selector. The app stops this owned process on
+exit. Missing Python, WSL, driver, dependency, or model prerequisites produce a
+startup error; the desktop entry does not install or modify system components.
+
+On Windows, an opt-in configuration setting can also start an existing local NVIDIA
 Compose service through a local Docker named pipe. Docker Desktop must already
 be running with its WSL2 backend; the app never starts or installs the Docker
 engine or WSL itself. The Unix-socket path remains available to isolated Linux
@@ -232,26 +270,35 @@ development tests, not as a Linux desktop release. Startup uses the user-approve
 never builds or pulls an image or recreates an existing container, reads the published port and waits for the Web
 page to become ready. Connection attempts own cancellable CLI and readiness
 work; stale attempts cannot replace a newer window. Closing the app never stops
-the shared container. Direct management of WSL Python or a native MLX process
-is not yet implemented; macOS connects to an already running native MLX or remote GPU service;
-there is no Metal-in-Docker path. Desktop packages contain the shell, Electron
+the shared container. Installed desktop packages can still connect to an already
+running local or remote service; the source-managed backend requires the repository
+and its prepared Python environment. There is no Metal-in-Docker path. Desktop packages contain the shell, Electron
 runtime and pet display resources, not inference weights, Python, recordings,
 credentials or memory data.
 
 The desktop app also owns one optional transparent pet window in the same
 Electron application. Packaging selects the existing `pet/` renderer, animation,
-observer and Canvas/PNG resources without forking them or bundling another Electron.
-The renderer and scene require no Pixi, Cubism or WASM runtime. Only the generated
-HTML connection CSP is adapted for the desktop package. Resource preparation
-backs up recognized legacy build output before migration, excludes backups from
-the package, and rejects unknown files. Its isolated preload exposes window controls,
+observer, Cubism 4 model, native motions and Pixi runtime without forking them or
+bundling another Electron. The generated HTML connection CSP is adapted for the
+desktop package, and the pet session permits the Cubism Core source plus the
+selected observer. Resource preparation backs up recognized Canvas and older
+Live2D build output before migration, excludes backups from the package, and
+rejects unknown files. Its isolated preload exposes window controls,
 not Docker or settings APIs; IPC validates the pet's exact main frame and document.
-The pet session permits only bundled resources and the selected `/ws-pet` endpoint,
-denies device permissions, and does not start a conversation. Service changes close
+The pet session permits bundled resources, the Cubism Core source and the selected
+`/ws-pet` endpoint, denies device permissions, and does not start a conversation. Service changes close
 the old observer before opening the new one; closing the Studio window closes the
-pet. Position lives in desktop app data. Native users can disable the backend's
+pet. Position and a 40–150% expanded-window scale live in desktop app data; older
+position-only files default to 100%. The shared renderer has no toolbar: dragging
+any of its four corners resizes around the opposite corner, and dragging the
+character or scene moves the window. Window controllers constrain bounds to
+the display work area and resize without restarting the avatar pose. The dot
+keeps its fixed size, and manual collapse suppresses observer-triggered expansion
+until the user explicitly reopens it. Opening or focusing Studio leaves pet
+placement under user control. The standalone controller provides the same controls
+with its own saved position and scale. Native users can disable the backend's
 automatic pet with the existing `STUDIO_DESKTOP_PET=0` to avoid duplicate windows;
-containers already do this. The standalone pet and Web playback contracts remain unchanged.
+containers already do this. The standalone launch and Web playback contracts remain unchanged.
 
 Original `web/run.py`
 and moved provider modules remain thin compatibility entry points; executable
@@ -366,6 +413,13 @@ profile and eval workflow are standardized on Python 3.12.
 
 Shared code consumes these meanings rather than provider-native objects.
 
+Input display messages use an opaque `input_turn_id`, distinct from assistant
+`output_id` and persistent history IDs. Capture retains it across partials and
+the accepted input, then rotates it for the next turn. An explicit continuation
+merge includes `replace_input_turn_id` so the UI updates the original user bubble
+instead of guessing from elapsed time. Untagged events retain legacy display
+behavior. These identifiers carry no memory-write or interruption authority.
+
 ## 6. Input and turn flow
 
 ```mermaid
@@ -396,12 +450,37 @@ Capture batches target short, regular PCM frames. Capture and playback share a
 sample-clock relationship so latency and echo logic can use explicit media
 positions rather than wall-clock guesses.
 
+The browser owns one live connection attempt and its microphone resources.
+Startup is registered before opening the WebSocket; another start-button click
+cancels that attempt instead of creating a second capture. Every asynchronous
+startup continuation checks its owner, and late permission results have their
+tracks stopped. End/disconnect/page exit invalidates ownership before removing
+node callbacks, disconnecting the capture and playback-reference edges, stopping
+tracks and closing the owned socket. PCM callbacks use the socket and sample
+clock captured by their own attempt, never a later connection. AudioWorklet
+module loading may be shared for one audio context, but capture nodes are not.
+The ScriptProcessor fallback follows the same cleanup and ownership rules.
+Old socket events and cancelled startup-memory responses cannot affect the new
+session. This is a per-page guard, not a cross-client or server-wide session limit.
+
 ### ASR and final refinement
 
 Streaming ASR runs in a dedicated serial worker so chunk inference does not
 block WebSocket input. At turn end, full-audio ASR refinement may run in a
 separate final-ASR executor. Epoch checks prevent obsolete worker results from
 overwriting a newer turn.
+
+ASR finalization gives full-audio refinement an 80 ms preference window, then
+accepts the first non-empty result from refinement or streaming flush. Passing
+the preference window does not cancel refinement while streaming is unfinished.
+The two decoders share a one-second finalization deadline, including queue time;
+if neither produces usable text, the last available transcript is retained and
+the streaming worker advances its epoch to discard stale work. Timeout fallbacks
+are logged even when detailed ASR timing is disabled. Standalone offline probes
+and speculative snapshots use the same one-second wait limit. Cancelling a wait
+does not forcibly terminate native inference, but late results cannot update
+turn text. These limits bound ASR waits, not VAD turn detection, memory retrieval,
+reply generation or playback.
 
 The complete captured audio remains available for archive and final decoding
 even when obsolete streaming chunks are skipped.
@@ -458,9 +537,13 @@ flowchart LR
 EOT can provide enough confidence to start reply work before final turn
 confirmation. This is a latency optimization, not a change to turn semantics.
 
-`ReplySink` initially buffers JSON events and PCM in one ordered private
-timeline. Nothing reaches the browser until final ASR and turn confirmation
-show that the speculative input still covers the final utterance.
+`ReplySink` initially buffers reply JSON events and PCM in one ordered private
+timeline. Speculative replies remain private until final ASR and turn confirmation
+show that the speculative input still covers the final utterance. Accepted user
+transcripts are published separately by the conversation loop after input filters
+and continuation merging, before routing or reply handoff. Cancelling a reply
+cannot discard that user's display record. This publication never writes Session
+Context or memory; their existing reply-finalization paths retain ownership.
 
 ```text
 high EOT score
@@ -476,6 +559,18 @@ high EOT score
 Cancellation removes stale reply, TTS, display, and GPU work before a new
 response becomes authoritative.
 
+For conversation-managed chained speech, `Reply` only generates output;
+`Conversation` owns playback waiting and exactly-once context finalization.
+Speculative generation may finish while still private, but cannot start a
+playback-completion timeout, save history or enqueue ingest. Rejection only
+cancels/discards it. Acceptance binds finalization to the confirmed `Pending`,
+including its final text, audio and routing/privacy metadata, while retaining
+the existing generated reply and reuse decision. Normal replies and delayed
+continuation follow-ups use the same finalizer. Cancellation before a handoff
+task's first execution still reaps any adopted generator and finalizes the
+confirmed user input once. Legacy direct `Reply` callers retain their existing
+standalone finalization path.
+
 The Web demo uses EOT both to start speculative reply work and, after acoustic
 silence plus pause-policy approval, to end the Studio user turn. `VoiceStream` owns the
 immutable audio snapshot and final-ASR refinement; `studio/core/utils/capture/component.py` owns the policy
@@ -485,8 +580,11 @@ commit cancels the buffered work before any transcript or audio is sent. Once EO
 commits the turn, the final ASR transcript becomes authoritative without requiring
 an exact match to the earlier streaming hypothesis. Minor ASR repairs and spoken
 fillers keep the fast path; material continuation after the frozen EOT text
-cancels the stale reply and starts one reply from the complete turn. `ReplySink`
-replaces its buffered user-transcript event with that final text. Generated speech
+cancels the stale reply and starts one reply from the complete turn. Conversation-
+managed reply jobs do not emit user transcripts, including EOT snapshots. The
+legacy `ReplySink` transcript replacement remains available for direct callers.
+The UI finalizes user records by input ID and ignores later partials or duplicate
+finals for those records; a real new input remains free to update live text. Generated speech
 stays buffered until turn confirmation becomes the commit point for playback.
 
 Clearly unfinished voice turns have a separate continuation path. The Studio session
@@ -528,15 +626,29 @@ A route change between an early snapshot and final ASR invalidates buffered earl
 One session-scoped `TurnTakingStateMachine` then chooses the handoff. Ready
 audio is released directly. An ordinary predicted wait may use a cached
 acknowledgement, while `memory_cot` may request an LLM-generated work filler
-whenever main audio is not ready. Recent fast smalltalk cannot suppress this
-first slow-turn opportunity. Existing readiness races still cancel unplayed
-fillers if the main reply wins; the route does not guarantee a spoken filler.
+when main audio is not ready. The harness configures its probability and
+session cooldown separately from in-speech acknowledgements. A confirmed input
+gets at most one random draw, retained across handoff retries; speculative EOT
+work does not draw. A sent work filler reserves its clip duration plus cooldown;
+an acknowledged playback completion extends that deadline when playback started late.
+Skipped work fillers do not fall back to a cached acknowledgement. Existing
+readiness races still cancel unplayed fillers if the main reply wins; the route
+does not guarantee a spoken filler.
 First audio observations update the session estimate used by later
 decisions. Main reply work runs into a `ReplySink` while either filler plays.
 For every emitted end-of-turn filler, the browser reports actual playback
 completion before that sink releases `answer_start` or main PCM. Generation
 remains concurrent, but spoken filler and main audio never overlap or hard-cut
 each other.
+
+Work-filler wording comes from the already-loaded Qwen3-0.6B weights, not the
+main reply API. It uses a separate non-thinking short-generation prompt, the
+complete current input and at most two bounded history messages, without
+changing depth classification or retrieving additional memory. Cold weights,
+over-budget output, invalid text, failure or a queue-inclusive generation timeout
+skip the optional bridge. Token budget and cancellation limit background work;
+native inference already in progress cannot be forcibly interrupted. The
+legacy reply-stream filler helper remains available to direct callers.
 
 ## 9. Reply, prompt, and speech flow
 
@@ -557,8 +669,17 @@ VoiceMem's existing Gate for memory eligibility, and Qwen3-0.6B for reasoning de
 The model receives current text plus up to four context messages sharing the
 existing 320-character history budget. It answers only whether deep reasoning
 is needed and does not receive memory-prefetch hints. Studio-specific topic,
-date and greeting regex shortcuts are not used. Inference remains off-loop
-on the shared `GpuLoop` for the MLX backend, using the same local Qwen weights
+date and greeting regex shortcuts are not used. Each decision uses one off-loop
+classification request, not a second model judge or a keyword override.
+The editable depth policy treats recall, ordinary explanation, simple formula
+application and requests for an already-derived result as ordinary reasoning.
+Explicit current deep-thinking requests and genuinely complex derivation,
+diagnosis or multi-constraint planning remain deep. History resolves references;
+an earlier difficult topic or a verbose assistant answer does not carry a sticky
+depth into the next turn. Few-shot examples use the same bounded-history/current-
+input framing as runtime requests. An ordinary depth decision still retains
+Gate-approved memory.
+Inference executes on the shared `GpuLoop` for the MLX backend, using the same local Qwen weights
 quantized to 8 bits at load time. Its immutable KV prefix includes only the
 system prompt and examples; every request receives a separate cache copy after
 verifying the token prefix. CUDA and explicit `STUDIO_ROUTER_BACKEND=torch`
@@ -599,6 +720,13 @@ the speech loop.
 The reply model may prefix text with a tone tag. `studio/core/utils/tts/control.py` removes
 that control tag, smooths abrupt tone transitions, and converts it into a TTS
 instruction. Control tags are never spoken or stored as assistant text.
+The reply pipeline buffers a possible leading tone tag across deltas. If the
+provider ends normally before that buffer becomes a recognized tag or reaches
+the streaming fallback length, nonempty buffered text is delivered once as
+plain reply text to subtitles, the audio timeline and TTS. Recognized tag-only
+output and whitespace remain silent. Cancellation and provider failure discard
+the pending prefix instead of flushing it; speculative output still follows
+the existing `ReplySink` commitment and heard-prefix rules.
 
 The TTS layer accepts plain 24 kHz mono PCM16 bytes and optional
 `TimedAudioChunk` alignment metadata. Segment concurrency is selected by the
@@ -671,6 +799,9 @@ Some speech jobs receive temporary first-chunk priority; afterward they rejoin
 weighted scheduling. Cancellation closes the generator and removes it from the
 active set. Creating an independent MLX thread or stream bypasses this safety
 and scheduling model.
+Auxiliary Qwen work fillers run as non-exclusive token-stepped jobs on this
+same scheduler. Each has a private KV cache and leaves the classifier's static
+prefix cache untouched.
 
 ### CUDA
 
@@ -698,6 +829,10 @@ DeepSeek-only deployments require only DeepSeek credentials.
 Torch-backed embedding and related MPS operations use the process-level lock in
 `utils/torch_lock.py`. Lock scope covers device inference, not unrelated search
 coordination or waits on work that may need the same lock.
+The optional local work-filler decoder also reuses this lock, releasing it
+between forward passes so a whole sentence does not monopolize ASR/router
+access. Each request owns its KV cache and checks cancellation and deadline
+before each step and while acquiring the lock.
 
 ### Hot-path priority
 
@@ -741,6 +876,19 @@ Browser-rendered source samples determine the interruption cutoff. Text mapping
 uses provider alignment when available, completed-segment duration otherwise,
 and calibrated speech rate as the fallback.
 
+Studio timelines explicitly separate `generated_samples` (including private
+`ReplySink` PCM) from `sent_samples` recorded after a successful transport send.
+Only playback checkpoints establish rendered progress, bounded by delivery;
+without a report the confirmed progress is zero. A playback-completion timeout
+does not promote buffered or delivered audio to heard audio. Legacy timeline
+callers can retain append-as-emission and elapsed-time fallback behavior, but
+Studio's chained and realtime sessions use explicit delivery tracking.
+An interruption freezes both sample cutoff and mapped text before cancelling
+workers, so later clock ticks, alignments, audio or checkpoints cannot change
+the UI/history prefix. Ordinary finalization also freezes its final checkpoint.
+Realtime keeps its existing single `close_turn` owner and shares these playback
+rules. These bookkeeping changes add no model calls or pre-audio waits.
+
 Interruption separates reversible detection from cancellation:
 
 1. Candidate speech pauses playback while preserving the PCM queue.
@@ -759,13 +907,12 @@ Linux/WSL skips process startup while retaining all pet broadcast routes.
 Opening the browser page is not required to launch the pet.
 The optional desktop pet observes the existing pet WebSocket without starting
 another conversation. Its renderer follows output-identified playback checkpoints
-for mouth movement and uses interruption/disconnect handling plus a bounded
-watchdog to close the mouth. Backchannel notifications drive tilts; completed
-playback can select one random tilt. Linked mode disables timer-driven tilts,
-and pending actions wait for the required pose to finish loading. The pet starts
+for lifecycle and actual playback RMS for Live2D mouth movement. Pause,
+interruption, drain and disconnect close the mouth. Backchannel, ordinary reply
+and sadness events select separate pools of native model motions. The pet starts
 in the `lie` resting state. Conversation startup and detected user voice select
-the `sit` interaction state; a local silence timer returns it to rest. These states
-share the Canvas avatar and scene rather than separate Live2D poses. VAD transitions come from the
+the `sit` interaction state; a local silence timer returns it to rest. Both states
+share one Live2D model and scene. VAD transitions come from the
 existing capture state or realtime provider, not raw microphone packet arrival.
 Conversation closure clears active voice state; resting suppresses random gestures.
 
@@ -784,6 +931,14 @@ current user input
 After a normal or interrupted reply, ingest runs outside the response path.
 The completion callback removes the session turn only when durable memory was
 created. Non-persistent dialogue remains until the session ends.
+
+Only confirmed turns enter this path. Chained conversations use one guarded
+finalizer for normal completion, interruption, errors, follow-ups and disconnect;
+unaccepted EOT snapshots never enqueue memory work. The finalizer uses the
+captured final user input and frozen heard assistant prefix, not the speculative
+input or full generated tail. Missing playback reports can therefore omit heard
+words from context rather than inventing unconfirmed playback. The existing
+200-character-per-message storage cap and recent-turn window are unchanged.
 
 Background ingest captures the target `VoiceMem` instance and Memory Space when
 scheduled. A later UI space change cannot redirect an existing write.

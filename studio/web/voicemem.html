@@ -481,7 +481,7 @@ const I18N = {
   zh: {
     chat:'对话', memspace:'Memory Space', liveInput:'流式输入 · Live input',
     you:'你', waitingYou:'等待你说话…', noReplyYet:'这一轮还没有回复。',
-    talkStart:'开始对话', talkEnd:'结束对话', pause:'暂停', resume:'继续',
+    talkStart:'开始对话', talkEnd:'结束对话', cancelStart:'取消启动', pause:'暂停', resume:'继续',
     ended:'已结束。',
     idle:'待机', listening:'正在听', replying:'正在回复', paused:'已暂停',
     left:'左脑', right:'右脑', factsShort:'事实', profileShort:'画像',
@@ -531,7 +531,7 @@ const I18N = {
   en: {
     chat:'Chat', memspace:'Memory Space', liveInput:'Live input',
     you:'You', waitingYou:'Waiting for you to speak…', noReplyYet:'No reply yet.',
-    talkStart:'Start talking', talkEnd:'End session', pause:'Pause', resume:'Resume',
+    talkStart:'Start talking', talkEnd:'End session', cancelStart:'Cancel startup', pause:'Pause', resume:'Resume',
     ended:'Session ended.',
     idle:'Idle', listening:'Listening', replying:'Replying', paused:'Paused',
     left:'Left brain', right:'Right brain', factsShort:'facts', profileShort:'profile',
@@ -1584,6 +1584,42 @@ function addOrMergeUserTurn(s,text,speaker){
   addTurn(s,'user',text,speaker);
   s.turns[s.turns.length-1].mergeUntil=now+2500;
 }
+function applyInputTranscript(s,m,final=false,backchannel=false){
+  const id=typeof m.input_turn_id==='string'?m.input_turn_id:'';
+  if(!id){
+    // Older backends retain their untagged display and continuation behavior.
+    s.ui.input=m.text;
+    if(final){
+      if(backchannel) addTurn(s,'user',m.text,s.ui.speaker||'你');
+      else addOrMergeUserTurn(s,m.text,s.ui.speaker||'你');
+    }
+    return true;
+  }
+  const state=s.inputTranscripts||(s.inputTranscripts={current:'',turns:new Map()});
+  let entry=state.turns.get(id);
+  if(entry&&(entry.final||(!final&&state.current!==id))) return false;
+  if(!entry){
+    entry={final:false,turn:null};
+    state.turns.set(id,entry);
+    state.current=id;
+  }
+  if(final){
+    const previous=state.turns.get(m.replace_input_turn_id);
+    entry.turn=entry.turn||(previous&&previous.turn);
+    if(previous&&previous!==entry) previous.final=true;
+    if(entry.turn){
+      entry.turn.text=m.text;
+      renderSessions(); if(s===currentSession()) renderChat();
+    }else{
+      addTurn(s,'user',m.text,s.ui.speaker||'你');
+      entry.turn=s.turns[s.turns.length-1];
+    }
+    entry.final=true;
+  }
+  if(state.current!==id) return false;
+  s.ui.input=m.text;
+  return true;
+}
 function paint(s){ if(s===currentSession()) renderIO(s); }
 function applyHits(s,sp,ex){
   const L=(ex.left||[]).map((i,k)=>({m:sp.left[i],score:(0.88-k*0.09).toFixed(2)})).filter(x=>x.m);
@@ -1653,7 +1689,8 @@ const WS_URL=params.get('ws')
 const WS_HOST=WS_URL.replace(/^wss?:\/\//,'');
 
 const SAMPLE_RATE=24000;          // 必须和 run.py 的 MIC_RATE 一致
-let ws=null, live=false, paused=false;
+let ws=null, live=false, paused=false, liveRun=null;
+function currentLiveRun(run){ return !!run && liveRun===run && !run.closed; }
 
 /* --- 播放 ---------------------------------------------------------- */
 /* Continuous PCM playback with adaptive jitter buffering. */
@@ -1758,6 +1795,14 @@ function reportPlaybackCheckpoint(m){
       state,event:m.type}));
   }catch(e){}
 }
+function reportAvatarAudioLevel(m){
+  if(!m.outputId||!ws||ws.readyState!==WebSocket.OPEN) return;
+  try{
+    ws.send(JSON.stringify({type:'avatar_audio_level',output_id:m.outputId,
+      rms:Number(m.rms||0),peak:Number(m.peak||0),
+      rendered_samples:Number(m.renderedSamples||0),sample_rate:Number(m.sampleRate||SAMPLE_RATE)}));
+  }catch(e){}
+}
 function beginPcmOutput(outputId,sampleRate=SAMPLE_RATE){
   pcmOutputId=String(outputId||'');
   pcmOutputSampleRate=Number(sampleRate||SAMPLE_RATE);
@@ -1772,6 +1817,7 @@ function initPcmPlayer(){
     pcmNode.connect(replyBus);
     pcmNode.port.onmessage=e=>{
       const m=e.data||{};
+      if(m.type==='level'){ reportAvatarAudioLevel(m); return; }
       reportPlaybackCheckpoint(m);
       if(m.type==='started') setSpokenCaptionPlaying(true);
       else if(m.type==='drained'){
@@ -1901,7 +1947,7 @@ const AEC_TAIL_S = 0.25;
 function assistantAudible(){
   return !!playCtx && playCtx.currentTime < nextPlay + AEC_TAIL_S;
 }
-let micStream=null, micCtx=null, micProc=null, micSource=null, micWorkletLoaded=false;
+let micWorkletLoad=null;
 function toPCM16(f32){
   const o=new Int16Array(f32.length);
   for(let i=0;i<f32.length;i++){ const s=Math.max(-1,Math.min(1,f32[i])); o[i]=s<0?s*0x8000:s*0x7fff; }
@@ -1924,50 +1970,84 @@ function resampleLinear(f32,from,to){
   }
   return out;
 }
-async function startMic(){
-  micStream=await navigator.mediaDevices.getUserMedia(
-    {audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
-  // **按 24k 建**，让浏览器自己做重采样（它有正经的抗混叠）。我们这边再手动从
-  // 48k 抽到 24k 的话会引入混叠，ASR 直接变差——这是"转写一直不准"的真正原因。
-  micCtx=ensurePlayback(); // Same sample clock for mic and actual render reference.
-  if(micCtx.state==='suspended') await micCtx.resume();
-  const src=micSource=micCtx.createMediaStreamSource(micStream);
-  const sendMic=f32=>{
-    if(!ws||ws.readyState!==1||paused||replaying) return;
-    if(HALF_DUPLEX && assistantAudible()) return;   // 闭麦，见上面
-    let peak=0; for(let i=0;i<f32.length;i++){ const v=Math.abs(f32[i]); if(v>peak) peak=v; }
-    lvOn=peak>0.02;
-    ws.send(toPCM16(downsample(f32,micCtx.sampleRate,SAMPLE_RATE)).buffer);
-  };
-  const settings=micStream.getAudioTracks()[0].getSettings();
-  console.info('[mic] browser AEC:',settings.echoCancellation,'noise suppression:',settings.noiseSuppression);
-  try{
-    if(!micWorkletLoaded){
-      await micCtx.audioWorklet.addModule('/mic-capture-worklet.js');
-      micWorkletLoaded=true;
-    }
-    micProc=new AudioWorkletNode(micCtx,'voicemem-mic-capture',
-      {numberOfInputs:2,numberOfOutputs:1,outputChannelCount:[1]});
-    src.connect(micProc,0,0); playBus.connect(micProc,0,1);
-    micProc.port.onmessage=e=>{
-      if(e.data.type==='mic') sendMic(e.data.samples);
-      else if(e.data.suppressed&&window.VM_DEBUG) console.debug('[aec]',e.data);
-    };
-  }catch(e){
-    console.warn('[mic] worklet unavailable; browser AEC only',e);
-    micProc=micCtx.createScriptProcessor(512,1,1);
-    micProc.onaudioprocess=e=>sendMic(e.inputBuffer.getChannelData(0));
-    src.connect(micProc);
+function detachMicNode(mic){
+  const node=mic.processor;
+  if(node){
+    if(node.port){ node.port.onmessage=null; try{node.port.close();}catch(e){} }
+    node.onaudioprocess=null;
+    try{node.disconnect();}catch(e){}
+    if(mic.referenceBus){try{mic.referenceBus.disconnect(node);}catch(e){}}
   }
-  micProc.connect(micCtx.destination);
+  if(mic.source){try{mic.source.disconnect();}catch(e){}}
+  mic.processor=null;
 }
-function stopMic(){
-  if(micSource){micSource.disconnect();micSource=null;}
-  if(playBus&&micProc){try{playBus.disconnect(micProc);}catch(e){}}
-  if(micProc){ micProc.disconnect(); micProc.onaudioprocess=null; micProc=null; }
-  if(micStream){ for(const t of micStream.getTracks()) t.stop(); micStream=null; }
-  lvOn=false;
+function disposeMic(mic){
+  if(!mic) return;
+  mic.closed=true;
+  detachMicNode(mic);
+  if(mic.stream){ for(const track of mic.stream.getTracks()) track.stop(); }
+  mic.stream=mic.source=null;
 }
+async function startMic(run){
+  if(!currentLiveRun(run)) return;
+  if(run.mic) return run.mic.ready;
+  const mic=run.mic={closed:false,stream:null,source:null,processor:null,referenceBus:null};
+  const active=()=>currentLiveRun(run)&&!mic.closed;
+  const socket=run.socket;
+  mic.ready=(async()=>{
+    try{
+      mic.stream=await navigator.mediaDevices.getUserMedia(
+        {audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+      // Permission requests cannot be cancelled; dispose late results instead.
+      if(!active()){disposeMic(mic);return;}
+      const ctx=ensurePlayback(); // Capture and playback retain one sample clock.
+      if(ctx.state==='suspended') await ctx.resume();
+      if(!active()){disposeMic(mic);return;}
+      mic.source=ctx.createMediaStreamSource(mic.stream);
+      mic.referenceBus=playBus;
+      const sendMic=f32=>{
+        if(!active()||socket.readyState!==WebSocket.OPEN||paused||replaying) return;
+        if(HALF_DUPLEX && assistantAudible()) return;
+        let peak=0; for(let i=0;i<f32.length;i++){ const v=Math.abs(f32[i]); if(v>peak) peak=v; }
+        lvOn=peak>0.02;
+        socket.send(toPCM16(downsample(f32,ctx.sampleRate,SAMPLE_RATE)).buffer);
+      };
+      const settings=mic.stream.getAudioTracks()[0].getSettings();
+      console.info('[mic] browser AEC:',settings.echoCancellation,'noise suppression:',settings.noiseSuppression);
+      try{
+        // Share module loading across restarts, but never share capture nodes.
+        if(!micWorkletLoad||micWorkletLoad.context!==ctx){
+          const loading={context:ctx,promise:ctx.audioWorklet.addModule('/mic-capture-worklet.js')};
+          micWorkletLoad=loading;
+          loading.promise.catch(()=>{if(micWorkletLoad===loading) micWorkletLoad=null;});
+        }
+        await micWorkletLoad.promise;
+        if(!active()){disposeMic(mic);return;}
+        const node=mic.processor=new AudioWorkletNode(ctx,'voicemem-mic-capture',
+          {numberOfInputs:2,numberOfOutputs:1,outputChannelCount:[1]});
+        mic.source.connect(node,0,0); mic.referenceBus.connect(node,0,1);
+        node.port.onmessage=e=>{
+          if(!active()||mic.processor!==node) return;
+          if(e.data.type==='mic') sendMic(e.data.samples);
+          else if(e.data.suppressed&&window.VM_DEBUG) console.debug('[aec]',e.data);
+        };
+      }catch(e){
+        if(!active()){disposeMic(mic);return;}
+        detachMicNode(mic);
+        console.warn('[mic] worklet unavailable; browser AEC only',e);
+        const node=mic.processor=ctx.createScriptProcessor(512,1,1);
+        node.onaudioprocess=e=>{if(mic.processor===node) sendMic(e.inputBuffer.getChannelData(0));};
+        mic.source.connect(node);
+      }
+      mic.processor.connect(ctx.destination);
+    }catch(e){
+      disposeMic(mic);
+      throw e;
+    }
+  })();
+  return mic.ready;
+}
+function stopMic(run=liveRun){ disposeMic(run&&run.mic); }
 
 /* --- 后端的记忆 → 一个独立空间 -------------------------------------- */
 /* 不往 demo/mine 里塞：那两个是脚本空间，混进真记忆之后脚本里的 left:[2,3]
@@ -1985,7 +2065,7 @@ function ensureSpaceObj(id){
   if(!SPACE_IDS.includes(id)) SPACE_IDS.push(id);
 }
 
-async function loadMemories(){
+async function loadMemories(isCurrent=()=>true){
   ensureSpaceObj(activeSpace);
   let m;
   try{
@@ -1993,6 +2073,7 @@ async function loadMemories(){
     if(!r.ok) return;
     m=await r.json();
   }catch(e){ return; }
+  if(!isCurrent()) return;
   const sp=SPACES[activeSpace];
 
   // 记下刷新前每个节点挂着几条 note。一句新话多半是挂到**已有**节点下面
@@ -2223,20 +2304,21 @@ function handle(m){
       toast(i18n('connected', m.mode||'')); break;
 
     case 'partial_transcript':
+      if(!applyInputTranscript(s,m)) break;
       if(m.text && !m.non_interrupting) setVoice('user');
-      s.ui.input=m.text; paint(s); break;
+      paint(s); break;
 
     case 'user_backchannel':
       // Acknowledgement while listening: display without resetting reply state.
-      s.ui.input=m.text; paint(s);
-      addTurn(s,'user',m.text,s.ui.speaker||'你'); break;
+      if(applyInputTranscript(s,m,true,true)) paint(s);
+      break;
 
     case 'user_transcript':
+      if(!applyInputTranscript(s,m,true)) break;
       // 新的一轮：先把上一轮的标签清掉。这一轮抽出什么，等 ingest 完了再填。
       // 不清的话，说一句抽不出东西的话（「啦啦啦」），标签栏还挂着上一句的实体。
       s.ui.tags={emo:'',ent:'',sch:''};
-      lvOn=false; s.ui.input=m.text; paint(s);
-      addOrMergeUserTurn(s,m.text,s.ui.speaker||'你'); break;
+      lvOn=false; paint(s); break;
 
     case 'memory_hits': {
       // 展示可能晚于首音频；旧回合的后台结果不能覆盖新回合。
@@ -2428,41 +2510,62 @@ async function titleFor(s){
 /* --- 开始 / 结束 --------------------------------------------------- */
 const talkBtn=$('talkBtn'), pauseBtn=$('pauseBtn');
 function syncButtons(){
-  talkBtn.textContent=live?i18n('talkEnd'):i18n('talkStart');
-  talkBtn.classList.toggle('primary',!live);
-  talkBtn.classList.toggle('live',live);
-  pauseBtn.disabled=!live; pauseBtn.textContent=paused?i18n('resume'):i18n('pause');
+  talkBtn.textContent=liveRun&&liveRun.starting?i18n('cancelStart'):live?i18n('talkEnd'):i18n('talkStart');
+  talkBtn.classList.toggle('primary',!liveRun);
+  talkBtn.classList.toggle('live',!!liveRun);
+  pauseBtn.disabled=!live||!!(liveRun&&liveRun.starting);
+  pauseBtn.textContent=paused?i18n('resume'):i18n('pause');
 }
 function endLive(note){
+  const run=liveRun, socket=run&&run.socket;
+  // Invalidate ownership before cleanup or any pending startup can resume.
+  liveRun=null; ws=null;
+  if(run) run.closed=true;
   live=false; paused=false;
-  // 挂断就该真的安静下来——底噪的意思是"线还连着"，连都断了还响就成了噪音。
+  stopMic(run);
+  if(socket){
+    socket.onopen=socket.onmessage=socket.onclose=socket.onerror=null;
+    try{socket.close();}catch(e){}
+  }
   if(pcmNode) pcmNode.port.postMessage({type:'comfort',db:null});
-  stopMic(); stopPlayback();
-  if(ws){ ws.onclose=null; ws.close(); ws=null; }
+  stopPlayback(); lvOn=false;
   aiSpeaking=false; syncButtons(); setVoice('idle');
   if(note) toast(note);
 }
 talkBtn.addEventListener('click',async()=>{
-  if(live){ endLive(i18n('ended')); return; }
+  if(liveRun){ endLive(i18n('ended')); return; }
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
     toast(i18n('micUnsupported')); return; }
-  ensurePlayback();               // 必须在这个 click 里建，见 ensurePlayback 注释
-  setComfortNoise(pcmComfortDb);  // 接通即起底噪：第一句回复之前的那段等待最需要它
-  try{ ws=new WebSocket(WS_URL); }catch(e){ toast(i18n('cantConnect', WS_HOST)); return; }
-  ws.binaryType='arraybuffer';
-  ws.onopen=async()=>{
+  const run=liveRun={socket:null,mic:null,starting:true,opened:false,closed:false};
+  syncButtons();
+  try{
+    ensurePlayback(); // Preserve browser user activation for the audio context.
+    setComfortNoise(pcmComfortDb);
+    ws=run.socket=new WebSocket(WS_URL);
+  }catch(e){ endLive(i18n('cantConnect', WS_HOST)); return; }
+  const socket=run.socket;
+  socket.binaryType='arraybuffer';
+  socket.onopen=async()=>{
+    if(!currentLiveRun(run)||run.opened) return;
+    run.opened=true;
     live=true;
-    // 先建会话再拉记忆。反过来的话 loadMemories 那几百毫秒里如果已经来了
-    // memory_hits，它会渲染进**旧的**那个 session，紧接着新 session 一建面板就
-    // 空了——表现就是右脑栏一直停在「等待检索…」。
-    ensureSpaceObj(activeSpace);
-    createSession(activeSpace);
-    await loadMemories();
-    syncButtons(); setVoice('user');
-    try{ await startMic(); }
-    catch(e){ endLive(i18n('disconnected', i18n('micFailed', e.name))); }
+    try{
+      // The session exists before the first backend event can update its UI.
+      ensureSpaceObj(activeSpace);
+      createSession(activeSpace);
+      await loadMemories(()=>currentLiveRun(run));
+      if(!currentLiveRun(run)) return;
+      setVoice('user');
+      await startMic(run);
+      if(!currentLiveRun(run)) return;
+      run.starting=false;
+      syncButtons();
+    }catch(e){
+      if(currentLiveRun(run)) endLive(i18n('disconnected', i18n('micFailed', e.name)));
+    }
   };
-  ws.onmessage=ev=>{
+  socket.onmessage=ev=>{
+    if(!currentLiveRun(run)) return;
     if(ev.data instanceof ArrayBuffer){
       try{ playPcm(ev.data); }catch(e){ console.warn('[audio] 丢帧',e); }
       return;
@@ -2475,15 +2578,16 @@ talkBtn.addEventListener('click',async()=>{
     try{ handle(msg); }
     catch(e){ console.error('[vm] 处理 '+msg.type+' 出错：', e); }
   };
-  ws.onclose=()=>{ endLive(i18n('backendGone')); };
-  ws.onerror=()=>{ toast(i18n('cantConnect', WS_HOST)); };
+  socket.onclose=()=>{ if(currentLiveRun(run)) endLive(i18n('backendGone')); };
+  socket.onerror=()=>{ if(currentLiveRun(run)) toast(i18n('cantConnect', WS_HOST)); };
 });
 pauseBtn.addEventListener('click',()=>{
-  if(!live) return;
+  if(!live||!liveRun||liveRun.starting) return;
   paused=!paused;
   if(paused){ lvOn=false; stopPlayback(); }
   setVoice(paused?'paused':'user'); syncButtons();
 });
+window.addEventListener('pagehide',()=>endLive());
 syncButtons();
 
 /* ── 语言切换 ─────────────────────────────────────────────────────── */

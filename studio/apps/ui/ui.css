@@ -1,0 +1,39 @@
+/* Shared timing only; each page owns its palette, layout and state. */
+:root{--motion-fast:180ms;--motion-view:420ms;--motion-ease:cubic-bezier(.22,.7,.25,1)}
+button,a,input{ -webkit-tap-highlight-color:transparent }
+button:disabled{cursor:default;opacity:.45}
+[hidden]{display:none!important}
+.start-talk{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:7px 14px;border-radius:999px;border:1px solid #ffffff52;background:#c9b6f7;color:#21182e;font:500 13px/1.2 system-ui,sans-serif;cursor:pointer;transition:background var(--motion-fast),transform var(--motion-fast)}
+.start-talk::before{content:'';width:6px;height:6px;background:currentColor;border-radius:50%}
+.start-talk:hover{transform:translateY(-1px);background:#dcccfb}
+.start-talk[aria-pressed=true]{background:#ffdae4;color:#8c294b}
+body[data-style=digital] .start-talk{background:#292634;color:#fff;border-color:#ffffff60}
+body[data-style=digital] .start-talk[aria-pressed=true]{background:#8c294b}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:50;padding:10px 16px;max-width:calc(100vw - 32px);border-radius:12px;background:#26252ef0;color:#fff;font:13px/1.6 system-ui,sans-serif}
+.style-nav{position:fixed;right:22px;top:25px;z-index:11;display:flex;gap:12px;font-size:calc(12px * var(--font-scale,1))}
+.style-nav a{color:inherit;text-decoration:none;padding:4px 0}
+.style-nav a:hover{text-decoration:underline}
+body.memory-on .style-nav{color:#dad3e9}
+.asr-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:calc(12px * var(--font-scale,1));color:#777180}
+.msg-foot button,.turn-actions button{min-width:30px;min-height:30px}
+.turn-actions{display:flex;gap:10px;margin-top:6px;font-size:calc(12px * var(--font-scale,1));color:#8b849c}
+.turn-actions button:hover{color:#4a3e79}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Readable content in both styles. JS adds a bounded screen-size allowance. */
+:root{--reading-font:clamp(18px,calc(12px + .45vw),28px);--ui-font:clamp(14px,calc(10px + .25vw),19px)}
+body[data-style=technical] .live-echo,body[data-style=technical] .airesp p,
+body[data-style=technical] .msg-body,body[data-style=digital] .said,
+body[data-style=digital] .voice,body[data-style=digital] .turn p{font-size:var(--reading-font);line-height:1.7;overflow-wrap:anywhere}
+body[data-style=technical] .live-echo{white-space:pre-wrap;overflow:visible;text-overflow:clip}
+body[data-style=technical] .input-wrap input,body[data-style=digital] .ask input{font-size:var(--memory-font,var(--reading-font))}
+body[data-style=technical] .label,
+body[data-style=technical] .msg-name,body[data-style=technical] .switch button,
+body[data-style=digital] .switch button,.start-talk,.asr-actions{font-size:var(--ui-font)}
+@media(min-width:2000px){body[data-style=digital] .log-glass{padding:28px}body[data-style=digital] .turn{margin-bottom:26px}body[data-style=technical] .msg{padding-block:24px}}
+@media(max-width:700px){:root{--reading-font:17px;--ui-font:14px}.orb-demo button{font-size:calc(12px * var(--font-scale,1));padding:7px 9px}}
+.toast{font-size:calc(13px * var(--font-scale,1))}.style-nav,.app-nav{flex-wrap:wrap}.start-talk{white-space:normal}
+
+/* Content and interface typography are intentionally independent. */
+body[data-style=technical] .mem{font-size:var(--memory-font,var(--reading-font))}
+body[data-style=technical] .mem .score{font-size:calc(10px * var(--content-scale,1))}
