@@ -267,16 +267,6 @@ button{cursor:pointer;background:none;border:none}
   border-radius:10px;background:#2f2f2f;border:1px solid var(--line-2);font-size:13px;
   color:var(--txt);opacity:0;pointer-events:none;z-index:70;transition:opacity .2s,transform .2s}
 #toast.on{opacity:1;transform:translate(-50%,0)}
-.interax-card{padding:14px;border:1px solid var(--line-2);border-radius:12px}
-.interax-card p{white-space:pre-wrap}
-.interax-card button,.interax-dialog button{padding:8px 14px;cursor:pointer}
-.interax-dialog{width:min(1200px,94vw);height:88vh;padding:16px;border:1px solid var(--line-2);
-  border-radius:14px;background:var(--bg,#fff);color:var(--txt,#222)}
-.interax-dialog::backdrop{background:#0009}
-.interax-dialog[open]{display:flex;flex-direction:column;gap:10px}
-.interax-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.interax-dialog p{margin:0;font-size:13px}
-.interax-canvas{position:relative;flex:1;min-height:0;background:white}
 
 @media (max-width:1180px){
   #app{grid-template-columns:56px minmax(320px,380px) minmax(340px,1fr)}
@@ -1080,34 +1070,8 @@ const SPACE_IDS=[];
 
 /* ── 会话 ─────────────────────────────────────────────────────────── */
 function blankUI(){ return { input:'', reply:'', speaker:'你',
-  tags:{emo:'',ent:'',sch:''}, recallL:[], recallR:[], interaxPages:[], interaxTasks:[], interaxErrors:[] }; }
+  tags:{emo:'',ent:'',sch:''}, recallL:[], recallR:[] }; }
 let sessions=[], currentId=0, nextId=1, activeSpace='demo', searchQ='';
-let interaxPagesUI=null;
-const interaxPagesReady=import('/interax-pages.js').then(({InteraxPages})=>{
-  interaxPagesUI=new InteraxPages({
-    send:(session,message)=>{
-      if(!ws||session.interaxSocket!==ws||ws.readyState!==WebSocket.OPEN) return false;
-      ws.send(JSON.stringify(message)); return true;
-    },
-    isCurrent:session=>session===currentSession()&&session.space===activeSpace,
-    notify:toast,
-    changed:session=>{ if(session===currentSession()) renderChat(); }
-  });
-  return interaxPagesUI;
-}).catch(error=>{ console.error('[interax] 页面组件加载失败',error); return null; });
-
-function handleInterax(message,socket){
-  interaxPagesReady.then(ui=>{
-    if(socket!==ws) return;
-    if(!ui){ toast('交互页面组件加载失败，请刷新页面。'); return; }
-    const session=socket.interaxOwners?.get(message.space);
-    if(!session) return;
-    if(message.type==='interax_state') ui.receive(message.space,message,socket);
-    else if(message.type==='interax_pages') ui.update(session,message.pages,socket);
-    else if(message.type==='interax_page_result') ui.result(message).catch(error=>console.error('[interax]',error));
-    else if(message.type==='interax_page_error') toast(message.error);
-  });
-}
 
 
 function findSession(id){ for(const s of sessions) if(s.id===id) return s; return null; }
@@ -1115,9 +1079,7 @@ function currentSession(){ return findSession(currentId); }
 function spaceSessions(sid){ return sessions.filter(s=>s.space===sid); }
 
 function createSession(spaceId){
-  interaxPagesUI?.close();
   const s={ id:nextId++, space:spaceId, title:i18n('newChat'), turns:[], ui:blankUI(), named:false };
-  if(ws?.interaxOwners) ws.interaxOwners.set(spaceId,s);
   sessions.unshift(s); currentId=s.id;
   if(activeSpace!==spaceId){ activeSpace=spaceId; buildGraph(spaceId); }
   else window.VMBrain.clear();
@@ -1126,7 +1088,6 @@ function createSession(spaceId){
 }
 function selectSession(id){
   const s=findSession(id); if(!s||id===currentId) return;
-  interaxPagesUI?.close();
   currentId=id; turnSess=null;
   if(s.space!==activeSpace){ activeSpace=s.space; buildGraph(s.space); }
   else window.VMBrain.clear();
@@ -1242,11 +1203,6 @@ async function switchSpace(id){
     if(!r.ok){ toast(i18n('switchFailed')); return; }
   }catch(e){ toast(i18n('switchFailed')); return; }
   activeSpace=id;
-  interaxPagesUI?.close();
-  const connectedSession=ws?.interaxOwners?.get(id);
-  if(connectedSession) currentId=connectedSession.id;
-  else if(live) createSession(id);
-  renderChat();
   fillSpaceSel(); renderSpaces(); renderSessions();
   await loadMemories();                 // 重新拉这个空间的记忆铺脑图
   toast(i18n('switched', SPACES[id]?SPACES[id].name:id));
@@ -1344,7 +1300,7 @@ function renderChat(){
   const csn=$('chatSpaceName');
   if(csn) csn.textContent=SPACES[s?s.space:activeSpace].name;
   const box=$('chatLog'); box.innerHTML='';
-  if(!s||(!s.turns.length&&!s.ui.interaxPages.length&&!s.ui.interaxTasks.length&&!s.ui.interaxErrors.length)){
+  if(!s||!s.turns.length){
     const e=document.createElement('div'); e.className='empty';
     e.innerHTML=i18n('startHint', SPACES[s?s.space:activeSpace].name);
     box.appendChild(e); restoreLiveChatDraft(s); return;
@@ -1357,7 +1313,6 @@ function renderChat(){
     const said=document.createElement('div'); said.className='said'; said.textContent=turn.text;
     w.append(who,said); box.appendChild(w);
   }
-  interaxPagesUI?.cards(s,box);
   restoreLiveChatDraft(s);
   box.scrollTop=box.scrollHeight;
 }
@@ -1663,15 +1618,40 @@ $('textIn').addEventListener('keydown',e=>{
 });
 
 /* ── 真实后端 ─────────────────────────────────────────────────────── */
-const params=new URLSearchParams(location.search);
+// const params=new URLSearchParams(location.search);
 // 跟着页面自己的地址走，别写死端口。
 //
 // location.host 已经带端口（本地是 localhost:8787），而放到 Tailscale Funnel /
 // 反向代理后面时是 443，URL 里没有端口——硬拼 ':8787' 会让线上版去连一个根本没
 // 开的端口，页面打得开、一点「开始对话」就连不上。
 // ?ws=host:port 仍可手动指定（前后端分开跑时用）。
-const WS_HOST=params.get('ws')||location.host||'localhost:8787';
-const WS_URL=(location.protocol==='https:'?'wss://':'ws://')+WS_HOST+'/ws';
+//const WS_HOST=params.get('ws')||location.host||'localhost:8787';
+//const WS_URL=(location.protocol==='https:'?'wss://':'ws://')+WS_HOST+'/ws';
+
+const params=new URLSearchParams(location.search);
+
+// Support path-based notebook proxies such as .../proxy/8787/.
+const APP_BASE=new URL('./', location.href);
+const appUrl=path=>new URL(
+  String(path).replace(/^\/+/, ''),
+  APP_BASE
+).toString();
+
+// Existing API calls use absolute paths. Route them through the notebook prefix.
+const nativeFetch=window.fetch.bind(window);
+window.fetch=(resource, options)=>{
+  if(typeof resource==='string' && resource.startsWith('/')){
+    resource=appUrl(resource);
+  }
+  return nativeFetch(resource, options);
+};
+
+const wsScheme=location.protocol==='https:'?'wss://':'ws://';
+const WS_URL=params.get('ws')
+  ? wsScheme+params.get('ws').replace(/\/+$/,'')+'/ws'
+  : appUrl('ws').replace(/^https:/,'wss:').replace(/^http:/,'ws:');
+const WS_HOST=WS_URL.replace(/^wss?:\/\//,'');
+
 const SAMPLE_RATE=24000;          // 必须和 run.py 的 MIC_RATE 一致
 let ws=null, live=false, paused=false;
 
@@ -2454,7 +2434,6 @@ function syncButtons(){
   pauseBtn.disabled=!live; pauseBtn.textContent=paused?i18n('resume'):i18n('pause');
 }
 function endLive(note){
-  interaxPagesUI?.disconnect(ws);
   live=false; paused=false;
   // 挂断就该真的安静下来——底噪的意思是"线还连着"，连都断了还响就成了噪音。
   if(pcmNode) pcmNode.port.postMessage({type:'comfort',db:null});
@@ -2470,8 +2449,6 @@ talkBtn.addEventListener('click',async()=>{
   ensurePlayback();               // 必须在这个 click 里建，见 ensurePlayback 注释
   setComfortNoise(pcmComfortDb);  // 接通即起底噪：第一句回复之前的那段等待最需要它
   try{ ws=new WebSocket(WS_URL); }catch(e){ toast(i18n('cantConnect', WS_HOST)); return; }
-  ws.interaxOwners=new Map();
-  const connectedSocket=ws;
   ws.binaryType='arraybuffer';
   ws.onopen=async()=>{
     live=true;
@@ -2493,7 +2470,6 @@ talkBtn.addEventListener('click',async()=>{
     let msg;
     try{ msg=JSON.parse(ev.data); }
     catch(e){ console.error('[vm] JSON 解析失败', e, ev.data); return; }
-    if(msg.type.startsWith('interax_')){ handleInterax(msg,connectedSocket); return; }
     // 出错要看得见：handle 里任何一行抛了，后面所有轮次都不会再渲染，
     // 表现就是「点了开始对话之后什么都不更新」，而控制台如果只 warn 很容易漏掉。
     try{ handle(msg); }
