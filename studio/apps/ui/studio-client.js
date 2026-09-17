@@ -1,6 +1,8 @@
 /* Same-origin Studio transport. Each page owns one cancellable conversation. */
 (() => {
   'use strict';
+  const STUDIO_BASE = new URL('../', document.currentScript.src);
+  const studioURL = path => new URL(path, STUDIO_BASE);
   const RATE = 24000;
   const MAX_REPLAY_RECORDS = 32;
   const MAX_REPLAY_SAMPLES = RATE * 60 * 20;
@@ -15,62 +17,17 @@
     }
     return output;
   }
-  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {},
-    getConversation = () => null, onInteraxChanged = () => {} } = {}) {
+  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {} } = {}) {
     let run = null;
-    let pageUI = null, pageReady = null;
-    const pageSessions = new WeakMap();
     let replayRun = null;
     let replaySamples = 0;
     const recordings = new Map();
     const active = owner => !!owner && run === owner && !owner.closed;
     const emit = (owner, event) => { if (active(owner)) onEvent(event); };
     const sendJSON = (owner, message) => {
-      if (active(owner) && owner.socket?.readyState === WebSocket.OPEN) {
+      if (active(owner) && owner.socket?.readyState === WebSocket.OPEN)
         owner.socket.send(JSON.stringify(message));
-        return true;
-      }
-      return false;
     };
-    function loadPages() {
-      if (!pageReady) pageReady = import('/interax-pages.js').then(({ InteraxPages }) => {
-        pageUI = new InteraxPages({
-          send: (session, message) => session.interaxSocket === run?.socket && sendJSON(run, message),
-          isCurrent: session => active(run) && session.interaxSocket === run.socket &&
-            session.conversation === (getConversation() || run.conversation),
-          notify: message => VMUI.notify(message),
-          changed: session => onInteraxChanged(session.conversation,
-            !session.ui.interaxDisconnected && Boolean(session.ui.interaxTasks?.length ||
-              session.ui.interaxPages?.length || session.ui.interaxErrors?.length)),
-        });
-        return pageUI;
-      }).catch(error => { pageReady = null; throw error; });
-      return pageReady;
-    }
-    async function handleInterax(owner, message) {
-      try {
-        const ui = await loadPages();
-        if (!active(owner)) return;
-        const socket = owner.socket;
-        if (!socket.interaxOwners.has(message.space)) {
-          const session = { space: message.space, conversation: owner.conversation, ui: {} };
-          socket.interaxOwners.set(message.space, session);
-          if (!pageSessions.has(owner.conversation)) pageSessions.set(owner.conversation, new Set());
-          pageSessions.get(owner.conversation).add(session);
-        }
-        if (message.type === 'interax_state') ui.receive(message.space, message, socket);
-        else if (message.type === 'interax_pages') ui.update(socket.interaxOwners.get(message.space), message.pages, socket);
-        else if (message.type === 'interax_page_result') await ui.result(message);
-        else if (message.type === 'interax_page_error') VMUI.notify(message.error);
-      } catch (error) {
-        if (active(owner)) VMUI.notify(`交互页面加载失败：${error.message}`);
-      }
-    }
-    function renderInterax(conversation, container) {
-      const before = container.children.length;
-      for (const session of pageSessions.get(conversation) || []) pageUI?.cards(session, container);
-      return container.children.length > before;
-    }
     function stopMic(owner) {
       const mic = owner?.mic;
       if (!mic) return;
@@ -201,7 +158,6 @@
       stopMic(owner);
       owner.closed = true;
       run = null;
-      pageUI?.disconnect(owner.socket);
       clearTimeout(owner.timeout);
       clearTimeout(owner.thinking);
       owner.reject?.(new Error('会话已结束'));
@@ -254,7 +210,6 @@
     }
     function handle(owner, message) {
       if (!active(owner)) return;
-      if (message.type?.startsWith('interax_')) { void handleInterax(owner, message); return; }
       if (message.output_id && message.type !== 'answer_start' && message.output_id !== owner.output) return;
       switch (message.type) {
         case 'session_ready':
@@ -295,7 +250,7 @@
       try {
         const ctx = owner.context;
         await ctx.resume();
-        await ctx.audioWorklet.addModule('/pcm-player-worklet.js');
+        await ctx.audioWorklet.addModule(studioURL('pcm-player-worklet.js').href);
         if (!active(owner)) return;
         owner.bus = ctx.createGain(); owner.bus.connect(ctx.destination);
         owner.player = new AudioWorkletNode(ctx, 'voicemem-pcm-player', { outputChannelCount: [1] });
@@ -329,9 +284,9 @@
             }
           }
         };
-        const url = new URL('/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = studioURL('ws');
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
         const socket = owner.socket = new WebSocket(url.href); socket.binaryType = 'arraybuffer';
-        socket.interaxOwners = new Map();
         socket.onmessage = event => {
           if (!active(owner)) return;
           try {
@@ -349,7 +304,7 @@
     }
     async function playMemory(owner, id) {
       try {
-        const response = await fetch(`/api/audio/${encodeURIComponent(id)}`);
+        const response = await fetch(studioURL(`api/audio/${encodeURIComponent(id)}`));
         if (!response.ok) throw new Error('记忆录音暂不可用。');
         const buffer = await owner.context.decodeAudioData(await response.arrayBuffer());
         if (!active(owner)) return;
@@ -362,7 +317,6 @@
     function connect() {
       if (run) return run.ready;
       const owner = run = { closed: false, clips: new Set(), rate: RATE, output: '' };
-      owner.conversation = getConversation() || owner;
       owner.ready = new Promise((resolve, reject) => { owner.resolve = resolve; owner.reject = reject; });
       // A handler is attached immediately so cancellation never leaves an unhandled rejection.
       owner.ready.catch(() => {});
@@ -385,7 +339,7 @@
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
         if (!active(owner) || owner.mic !== mic) { stream.getTracks().forEach(track => track.stop()); return; }
         mic.stream = stream;
-        await owner.context.audioWorklet.addModule('/mic-capture-worklet.js');
+        await owner.context.audioWorklet.addModule(studioURL('mic-capture-worklet.js').href);
         if (!active(owner) || owner.mic !== mic) return;
         mic.source = owner.context.createMediaStreamSource(stream);
         mic.node = new AudioWorkletNode(owner.context, 'voicemem-mic-capture', { numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [1] });
@@ -417,11 +371,11 @@
       const next = window.VMSettings?.language || 'zh-CN';
       if (next === language) return;
       language = next; end();
-      fetch('/api/lang', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang: next === 'en' ? 'en' : 'zh' }) })
+      fetch(studioURL('api/lang'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang: next === 'en' ? 'en' : 'zh' }) })
         .then(response => { if (!response.ok) throw new Error('语言切换失败'); })
         .catch(error => VMUI.notify(error.message));
     });
-    return { send, start, toggle, replay, stopReplay, renderInterax, cancel: end, stop: end };
+    return { send, start, toggle, replay, stopReplay, cancel: end, stop: end };
   }
   function applyUser(messages, event, role) {
     const id = event.input_turn_id;
