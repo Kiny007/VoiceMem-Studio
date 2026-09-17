@@ -4,9 +4,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../ui/studio-client.js'), 'utf8');
+const pagesSource = fs.readFileSync(require('node:path').join(__dirname, '../../web/interax-pages.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
-function fixture() {
+class Element {
+  constructor() { this.children = []; this.textContent = ''; this.open = false; }
+  set innerHTML(value) { this.nodes = Object.fromEntries(['strong', 'p', 'button', '.interax-canvas'].map(key => [key, new Element()])); }
+  querySelector(selector) { return this.nodes[selector]; }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren() { this.children = []; }
+  addEventListener() {}
+  showModal() { this.open = true; }
+  close() { this.open = false; }
+}
+const buttons = node => node.children.flatMap(child => child.type === 'button' ? [child] : buttons(child));
+function fixture({ pagesGate = Promise.resolve() } = {}) {
   const sockets = [], nodes = [], sources = [], events = [], notices = [], states = [], contexts = [], listeners = {};
+  const conversation = { id: 'chat_one' }, changes = [], renders = [];
+  let current = conversation, releaseRender, interaction;
   let grant;
   class Socket {
     static OPEN = 1;
@@ -36,22 +50,80 @@ function fixture() {
       sources.push(source); return source;
     }
   }
-  const context = {URL, ArrayBuffer, Float32Array, Int16Array, setTimeout, clearTimeout, console,
+  const context = {URL, ArrayBuffer, Float32Array, Int16Array, setTimeout, clearTimeout, console, crypto, AbortController,
     AudioContext:Context, AudioWorkletNode:Node, WebSocket:Socket,
     location:{href:'http://localhost:8787/ui/technical.html',protocol:'http:'},
-    document:{addEventListener(name, callback) {listeners[name] = callback;}},
+    document:{body:new Element(), createElement:() => new Element(), addEventListener(name, callback) {listeners[name] = callback;}},
     navigator:{mediaDevices:{getUserMedia:() => new Promise(resolve => {grant = resolve;})}},
     VMUI:{notify:message => notices.push(message)}, atob:text => Buffer.from(text, 'base64').toString('binary'),
   };
   context.window = {addEventListener(name, callback) {listeners[name] = callback;}};
-  vm.runInNewContext(source, context);
+  context.loadPagesModule = async () => { await pagesGate; return { InteraxPages: context.InteraxPages }; };
+  context.loadRendererModule = async () => ({ createIframeRenderer: (_container, options) => {
+    interaction = options.onInteraction;
+    return async (documents, { signal }) => {
+      renders.push(documents);
+      await new Promise(resolve => { releaseRender = resolve; });
+      signal.throwIfAborted();
+    };
+  } });
+  vm.createContext(context);
+  vm.runInContext(pagesSource.replace('export class InteraxPages', 'globalThis.InteraxPages = class InteraxPages')
+    .replace("await import('/interax-sdk/browser.js')", 'await loadRendererModule()'), context);
+  vm.runInContext(source.replace("import('/interax-pages.js')", 'loadPagesModule()'), context);
   const api = context.window.VMStudio;
-  const client = api.create({onEvent:e => events.push(e), onState:state => states.push(state)});
+  const client = api.create({onEvent:e => events.push(e), onState:state => states.push(state),
+    getConversation:() => current, onInteraxChanged:(owner, reveal) => changes.push({owner, reveal})});
   async function connected() {
     const sending = client.send('fixture'); await tick(); sockets[0].receive({type:'session_ready',mode:'llm_tts'}); await sending;
   }
-  return {api, client, sockets, nodes, sources, events, notices, states, contexts, listeners, connected, grant:stream => grant(stream)};
+  return {api, client, sockets, nodes, sources, events, notices, states, contexts, listeners, connected, grant:stream => grant(stream),
+    conversation, changes, renders, releaseRender:() => releaseRender(), interact:data => interaction(data),
+    select:next => { current = next; }, body:context.document.body};
 }
+
+test('current UI receives task cards and completes acquire, render, confirmation and GUI transport', async () => {
+  const f = fixture(); await f.connected(); const socket = f.sockets[0];
+  const task = {sessionId:'sdk_one',requestId:'req_one',title:'Interactive fixture',stage:'running'};
+  const page = {...task,itemId:'item_one',revision:1};
+  socket.receive({type:'interax_state',space:'space_a',tasks:[task],pages:[],errors:[]}); await tick();
+  const host = new Element();
+  assert.equal(f.client.renderInterax(f.conversation, host), true);
+  assert.equal(buttons(host).length, 0);
+  socket.receive({type:'interax_state',space:'space_a',tasks:[{...task,stage:'completed'}],pages:[page],errors:[]}); await tick();
+  host.replaceChildren(); f.client.renderInterax(f.conversation, host);
+  assert.equal(buttons(host)[0].textContent, '打开交互页面');
+  buttons(host)[0].onclick(); const selection = socket.sent.at(-1);
+  assert.equal(selection.type, 'interax_page_action'); assert.equal(selection.action, 'openPage');
+  assert.equal(selection.space, 'space_a');
+  socket.receive({type:'interax_page_result',space:'space_a',token:selection.token,action:'openPage',ok:true,
+    result:{documents:[{mediaType:'text/html',content:'<button>Next</button>'}]}}); await tick();
+  assert.equal(f.renders.length, 1);
+  assert.equal(socket.sent.at(-1).action, 'openPage', 'No receipt before renderer readiness');
+  f.releaseRender(); await tick(); assert.equal(socket.sent.at(-1).action, 'confirmPage');
+  socket.receive({type:'interax_page_result',space:'space_a',token:selection.token,action:'confirmPage',ok:true}); await tick();
+  f.interact({action:'next'}); assert.equal(socket.sent.at(-1).action, 'interact');
+  assert.deepEqual(socket.sent.at(-1).data, {action:'next'});
+  assert.equal(f.events.some(event => event.type.startsWith('interax_')), false);
+  assert.equal(f.changes.at(-1).owner, f.conversation); assert.equal(f.changes.at(-1).reveal, true);
+  f.client.cancel(); host.replaceChildren(); f.client.renderInterax(f.conversation, host);
+  assert.equal(buttons(host)[0].disabled, true); assert.equal(f.body.children[0].open, false);
+  assert.equal(f.changes.at(-1).reveal, false);
+});
+
+test('late component loads and old sockets cannot deliver tasks into a different conversation', async () => {
+  let release; const f = fixture({pagesGate:new Promise(resolve => { release = resolve; })}); await f.connected();
+  const message = {type:'interax_state',space:'space_a',tasks:[{sessionId:'sdk_one',requestId:'one',stage:'running'}],pages:[],errors:[]};
+  f.sockets[0].receive(message); f.client.cancel();
+  const other = {id:'chat_two'}; f.select(other); release(); await tick();
+  assert.equal(f.changes.length, 0);
+  const sending = f.client.send('new'); await tick(); f.sockets[1].receive({type:'session_ready'}); await sending;
+  f.sockets[0].receive(message); await tick();
+  assert.equal(f.client.renderInterax(other, new Element()), false);
+  f.sockets[1].receive(message); await tick();
+  assert.equal(f.client.renderInterax(other, new Element()), true);
+  assert.equal(f.client.renderInterax(f.conversation, new Element()), false); f.client.cancel();
+});
 test('text waits for session readiness and uses the existing user_text contract', async () => {
   const f = fixture(); const sent = f.client.send('hello'); await tick();
   assert.equal(f.sockets[0].sent.length, 0);

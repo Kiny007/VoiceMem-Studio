@@ -61,7 +61,6 @@ function renderMarks(host, marks, animate){
 function renderLog(){
   const host = $('logScroll');
   host.replaceChildren();
-  if(!state.messages.length){ host.append(el('p','log-empty','还没有记录。说第一句话，它会出现在这里。')); return; }
   state.messages.forEach((m, idx) => {
     const turn = el('article','turn '+(m.role==='me'?'me':'her'));
     turn.style.animationDelay = (idx*0.05)+'s';
@@ -79,6 +78,8 @@ function renderLog(){
     }
     host.append(turn);
   });
+  const hasTasks = voiceInput.renderInterax(current, host);
+  if (!state.messages.length && !hasTasks) host.append(el('p','log-empty','还没有记录。说第一句话，它会出现在这里。'));
   requestAnimationFrame(()=>host.scrollTop = host.scrollHeight);
 }
 
@@ -274,6 +275,12 @@ $('tabMem').onclick = () => setMemory(true);
 addEventListener('keydown', e => { if(e.key === 'Escape' && state.memory) setMemory(false); });
 addEventListener('resize', resizeInk);
 const voiceInput=VMStudio.create({
+  getConversation: () => current,
+  onInteraxChanged(conversation, reveal) {
+    if (conversation !== current) return;
+    renderLog();
+    if (reveal) { setMemory(false); setDrawer(true); }
+  },
   onEvent: handleStudio,
   onPhase(value){document.body.classList.toggle('talking', value === 'speaking');},
   onState(on){state.listening=on;document.body.classList.toggle('listening',on);$('micBtn').setAttribute('aria-label',on?'停止说话':'开始说话');$('micBtn').setAttribute('aria-pressed',String(on));$('startTalk').textContent=on?'结束对话':'开始对话';$('startTalk').setAttribute('aria-pressed',String(on));},
@@ -297,7 +304,7 @@ window.addEventListener('memory-domain-select',e=>{
 
 });
 document.querySelector('.switch').addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setMemory(!state.memory);$(state.memory?'tabMem':'tabLog').focus();}});
-addEventListener('keydown',e=>{if(e.key==='Escape'){setDrawer(false);setRail(innerWidth>1024 && !document.body.classList.contains('rail-collapsed'));voiceInput.cancel();}});
+addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('.interax-dialog[open]')){setDrawer(false);setRail(innerWidth>1024 && !document.body.classList.contains('rail-collapsed'));voiceInput.cancel();}});
 document.addEventListener('visibilitychange',()=>{cancelAnimationFrame(raf);raf=0;lastT=0;if(!document.hidden && ink!==inkTarget)raf=requestAnimationFrame(tick);});
 addEventListener('pageshow',e=>{if(e.persisted){selectConversation(current);resizeInk();if(ink!==inkTarget&&!raf)raf=requestAnimationFrame(tick);}});
 document.addEventListener('settings-open',()=>voiceInput.cancel());

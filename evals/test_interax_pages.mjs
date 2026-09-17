@@ -136,9 +136,13 @@ cards.replaceChildren(); ui.cards(session, cards);
 assert(texts(cards).includes('状态更新已停止'));
 assert.equal(buttons(cards)[0].disabled, true);
 
-// Syntax-check the actual inline scripts, including their WebSocket dispatch.
-const html = readFileSync(new URL('../studio/web/voicemem.html', import.meta.url), 'utf8');
-for (const [, script] of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(script);
-assert(html.includes("handleInterax(msg,connectedSocket)"));
-assert(html.includes('interaxPagesUI?.cards(s,box)'));
+// Check both shipped frontends; transport behavior is covered by ui-client.test.cjs.
+for (const name of ['technical', 'digital']) {
+  const html = readFileSync(new URL(`../studio/apps/ui/${name}.html`, import.meta.url), 'utf8');
+  const script = readFileSync(new URL(`../studio/apps/ui/${name}.js`, import.meta.url), 'utf8');
+  assert(html.includes('src="studio-client.js"'));
+  assert(script.includes('renderInterax('));
+  assert(script.includes('getConversation:'));
+  new vm.Script(script);
+}
 console.log('Interax page UI readiness, interaction, revision, stale selection and syntax checks passed');

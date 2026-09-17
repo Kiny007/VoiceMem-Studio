@@ -142,8 +142,12 @@ waiting-for-answer, failure, cancellation or completion state. Displayable
 results add their title, summary and **打开交互页面** button. A page may
 arrive after the spoken reply if generation takes longer. Click the button to
 open the page panel; close it to return to the conversation. Multiple available
-results have separate cards. This UI is provided by `/` (`voicemem.html`); the
-legacy `/classic` interface does not provide the page panel.
+results have separate cards. The home page `/` links to the supported
+`/ui/technical.html` and `/ui/digital.html` interfaces. Both receive Interax
+events through `studio-client.js`, reveal their conversation panel on task
+updates, and use the shared page component for acquisition, rendering and
+display confirmation. The older `/legacy` and `/classic` interfaces do not
+provide this integration.
 
 The display path uses the official SDK throughout:
 
@@ -190,6 +194,7 @@ Offline checks using existing dependencies only:
 python -m unittest evals.test_interax_integration evals.test_deepseek_reply
 node evals/test_interax_bridge.mjs
 node evals/test_interax_pages.mjs
+node --test studio/apps/evals/ui-client.test.cjs
 node evals/test_transcript_ui.cjs
 git diff --check
 ```
@@ -205,6 +210,14 @@ regression uses a DOM/renderer fixture to verify readiness, errors and stale
 selection handling; it is not a real browser rendering test. These checks never
 start Interax or Studio. On Windows, run Python checks with `PYTHONUTF8=1` so
 existing UTF-8 fixtures and test subprocesses use their intended encoding.
+
+A local browser fixture serves both shipped interfaces and the real upstream
+iframe renderer with deterministic WebSocket events, without model credentials:
+`python -m uvicorn evals.serve_interax_ui_fixture:app --host 127.0.0.1 --port 8791`.
+Open either UI, send a text request, open the page card, and use its Next button.
+The `/__test__/events` endpoint records acquisition, display confirmation and GUI
+actions. Stop the fixture server after verification. This checks frontend wiring
+and real sandbox rendering, not live model generation.
 
 **Needs Linux runtime verification:** Python 3.12 with the deployment's Node and
 read-only SDK checkout; model-provider tool calling with real credentials;

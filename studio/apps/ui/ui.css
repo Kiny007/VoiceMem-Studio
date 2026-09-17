@@ -2,6 +2,13 @@
 :root{--motion-fast:180ms;--motion-view:420ms;--motion-ease:cubic-bezier(.22,.7,.25,1)}
 button,a,input{ -webkit-tap-highlight-color:transparent }
 button:disabled{cursor:default;opacity:.45}
+.interax-card{display:block;padding:16px;margin:12px 0;border:1px solid #9996;border-radius:12px;text-align:left;overflow-wrap:anywhere}
+.interax-card strong{font-size:inherit}.interax-card p{white-space:pre-wrap;margin:8px 0}
+.interax-card button,.interax-dialog button{padding:8px 14px;border:1px solid #9998;border-radius:8px;background:#eee;color:#222;font:inherit;cursor:pointer}
+.interax-dialog{box-sizing:border-box;width:min(1200px,94vw);height:88dvh;max-height:94dvh;padding:16px;border:1px solid #9998;border-radius:16px;background:#fafafa;color:#222;font:16px/1.5 system-ui,sans-serif}
+.interax-dialog::backdrop{background:#0009}.interax-dialog[open]{display:flex;flex-direction:column;gap:10px}
+.interax-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}.interax-dialog p{margin:0;font-size:14px}
+.interax-canvas{position:relative;flex:1;min-height:0;background:white}
 [hidden]{display:none!important}
 .start-talk{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:7px 14px;border-radius:999px;border:1px solid #ffffff52;background:#c9b6f7;color:#21182e;font:500 13px/1.2 system-ui,sans-serif;cursor:pointer;transition:background var(--motion-fast),transform var(--motion-fast)}
 .start-talk::before{content:'';width:6px;height:6px;background:currentColor;border-radius:50%}

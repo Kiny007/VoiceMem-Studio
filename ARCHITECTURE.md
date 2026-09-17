@@ -108,7 +108,13 @@ Disconnect cancels these
 watchers and the bounded page-action task before closing bridges. Page actions
 are scheduled outside the capture receive loop so SDK latency cannot block audio.
 
-The main Studio UI shows a task card as soon as Interax acknowledges a Request,
+Both shipped interfaces (`studio/apps/ui/technical.js` and `digital.js`) use
+`studio-client.js` to dispatch Interax WebSocket events to the shared
+`studio/web/interax-pages.js` component. The client captures the browser chat
+when connecting and routes page actions through that same live socket. Async
+component loads and callbacks from closed sockets cannot update a new chat.
+Task updates reveal the conversation panel in either style; rendering chat text
+also renders its task cards. The main Studio UI shows a task card as soon as Interax acknowledges a Request,
 then adds page buttons when results become displayable. Task ownership is bound
 to the browser chat by Memory Space, Interax Session and Request; later updates
 retain that owner when another chat is created. Results from earlier Sessions

@@ -15,17 +15,62 @@
     }
     return output;
   }
-  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {} } = {}) {
+  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {},
+    getConversation = () => null, onInteraxChanged = () => {} } = {}) {
     let run = null;
+    let pageUI = null, pageReady = null;
+    const pageSessions = new WeakMap();
     let replayRun = null;
     let replaySamples = 0;
     const recordings = new Map();
     const active = owner => !!owner && run === owner && !owner.closed;
     const emit = (owner, event) => { if (active(owner)) onEvent(event); };
     const sendJSON = (owner, message) => {
-      if (active(owner) && owner.socket?.readyState === WebSocket.OPEN)
+      if (active(owner) && owner.socket?.readyState === WebSocket.OPEN) {
         owner.socket.send(JSON.stringify(message));
+        return true;
+      }
+      return false;
     };
+    function loadPages() {
+      if (!pageReady) pageReady = import('/interax-pages.js').then(({ InteraxPages }) => {
+        pageUI = new InteraxPages({
+          send: (session, message) => session.interaxSocket === run?.socket && sendJSON(run, message),
+          isCurrent: session => active(run) && session.interaxSocket === run.socket &&
+            session.conversation === (getConversation() || run.conversation),
+          notify: message => VMUI.notify(message),
+          changed: session => onInteraxChanged(session.conversation,
+            !session.ui.interaxDisconnected && Boolean(session.ui.interaxTasks?.length ||
+              session.ui.interaxPages?.length || session.ui.interaxErrors?.length)),
+        });
+        return pageUI;
+      }).catch(error => { pageReady = null; throw error; });
+      return pageReady;
+    }
+    async function handleInterax(owner, message) {
+      try {
+        const ui = await loadPages();
+        if (!active(owner)) return;
+        const socket = owner.socket;
+        if (!socket.interaxOwners.has(message.space)) {
+          const session = { space: message.space, conversation: owner.conversation, ui: {} };
+          socket.interaxOwners.set(message.space, session);
+          if (!pageSessions.has(owner.conversation)) pageSessions.set(owner.conversation, new Set());
+          pageSessions.get(owner.conversation).add(session);
+        }
+        if (message.type === 'interax_state') ui.receive(message.space, message, socket);
+        else if (message.type === 'interax_pages') ui.update(socket.interaxOwners.get(message.space), message.pages, socket);
+        else if (message.type === 'interax_page_result') await ui.result(message);
+        else if (message.type === 'interax_page_error') VMUI.notify(message.error);
+      } catch (error) {
+        if (active(owner)) VMUI.notify(`交互页面加载失败：${error.message}`);
+      }
+    }
+    function renderInterax(conversation, container) {
+      const before = container.children.length;
+      for (const session of pageSessions.get(conversation) || []) pageUI?.cards(session, container);
+      return container.children.length > before;
+    }
     function stopMic(owner) {
       const mic = owner?.mic;
       if (!mic) return;
@@ -156,6 +201,7 @@
       stopMic(owner);
       owner.closed = true;
       run = null;
+      pageUI?.disconnect(owner.socket);
       clearTimeout(owner.timeout);
       clearTimeout(owner.thinking);
       owner.reject?.(new Error('会话已结束'));
@@ -208,6 +254,7 @@
     }
     function handle(owner, message) {
       if (!active(owner)) return;
+      if (message.type?.startsWith('interax_')) { void handleInterax(owner, message); return; }
       if (message.output_id && message.type !== 'answer_start' && message.output_id !== owner.output) return;
       switch (message.type) {
         case 'session_ready':
@@ -284,6 +331,7 @@
         };
         const url = new URL('/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const socket = owner.socket = new WebSocket(url.href); socket.binaryType = 'arraybuffer';
+        socket.interaxOwners = new Map();
         socket.onmessage = event => {
           if (!active(owner)) return;
           try {
@@ -314,6 +362,7 @@
     function connect() {
       if (run) return run.ready;
       const owner = run = { closed: false, clips: new Set(), rate: RATE, output: '' };
+      owner.conversation = getConversation() || owner;
       owner.ready = new Promise((resolve, reject) => { owner.resolve = resolve; owner.reject = reject; });
       // A handler is attached immediately so cancellation never leaves an unhandled rejection.
       owner.ready.catch(() => {});
@@ -372,7 +421,7 @@
         .then(response => { if (!response.ok) throw new Error('语言切换失败'); })
         .catch(error => VMUI.notify(error.message));
     });
-    return { send, start, toggle, replay, stopReplay, cancel: end, stop: end };
+    return { send, start, toggle, replay, stopReplay, renderInterax, cancel: end, stop: end };
   }
   function applyUser(messages, event, role) {
     const id = event.input_turn_id;

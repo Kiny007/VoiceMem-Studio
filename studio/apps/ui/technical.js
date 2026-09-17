@@ -101,13 +101,14 @@ function renderThread() {
   t.innerHTML = '';
   const card = document.createElement('div');
   card.className = 'thread-card';
-  if (!conv.messages.length) {
+  conv.messages.forEach(m => card.appendChild(messageNode(m)));
+  const hasTasks = voice.renderInterax(conv, card);
+  if (!conv.messages.length && !hasTasks) {
     const empty = document.createElement('div');
     empty.className = 'thread-empty';
     empty.textContent = '说点什么，VoiceMem 会先去记忆里找相关的内容，再回答。';
     card.appendChild(empty);
   }
-  conv.messages.forEach(m => card.appendChild(messageNode(m)));
   t.appendChild(card);
   t.scrollTop = t.scrollHeight;
 }
@@ -303,6 +304,12 @@ document.addEventListener('keydown', e => {
 
 /* Voice lifecycle is local to this page. */
 const voice = VMStudio.create({
+  getConversation: () => CONVERSATIONS.find(c => c.id === activeConv),
+  onInteraxChanged(conversation, reveal) {
+    if (conversation.id !== activeConv) return;
+    renderThread();
+    if (reveal) switchTab('chat');
+  },
   onEvent: handleStudio,
   onPhase: orbState,
   onState(on) {
