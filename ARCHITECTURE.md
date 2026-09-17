@@ -95,10 +95,25 @@ conversations; filler, continuation-follow-up and stranger replies have no tool
 handler. Tool-enabled rounds buffer text until the model's tool/text decision is
 complete; only final text reaches the existing speech pipeline. Ordinary
 disabled-mode streaming and memory behavior retain their existing contracts.
-This mode retrieves actual text, questions, page catalogs and results. It does
-not supply an Interax Renderer/Player or send display/playback receipts. The
-browser remains a client of Studio only. Deployment, timing limits and offline
-regressions are described in `docs/interax.md`.
+This mode retrieves actual text, questions, page catalogs and results. Each
+Conversation owns a page watcher per bridge, polling the active Memory Space
+every two seconds through the same serialized IPC. Changed page catalogs reach
+the browser even after the foreground reply finishes. Disconnect cancels these
+watchers and the bounded page-action task before closing bridges. Page actions
+are scheduled outside the capture receive loop so SDK latency cannot block audio.
+
+The main Studio UI shows page cards. Opening a card uses the bound Result's
+`prepare({mode: "display"})`; only this selection downloads the HTML. Studio
+serves the upstream `browser.js` renderer and its viewport helper verbatim via
+two allowlisted assets. The renderer owns sandbox isolation, source-checked
+postMessage interactions and load/font/paint readiness. Its completion triggers
+`Presentation.confirmDisplayed()` through Studio's WebSocket and Node bridge;
+render failure uses `reportFailure()`. GUI data uses `Session.submitInteraction()`
+after display confirmation. Selection tokens, session/revision checks and socket/
+space ownership reject stale callbacks. Revisions replace page cards; users open
+the new version explicitly. HTML bypasses model context and TTS. The browser
+remains a client of Studio only. No Interax Player or playback receipts are
+implemented. Deployment and offline regressions are in `docs/interax.md`.
 
 The local Qwen3-0.6B classifier selects ordinary or deep reasoning after ASR.
 Studio combines that depth with VoiceMem memory eligibility into the existing

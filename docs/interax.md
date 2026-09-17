@@ -85,8 +85,10 @@ request-scoped results and a snapshot. The response preserves submission
 identity when subsequent reads fail. `id=null` uses `session.poll()` directly.
 `waiting`, `failed`, `rejected`, `cancelled`, `superseded` and `interrupted` retain
 their actual meaning. A timeout is not completion; `request.progress/wait/results`
-and `poll` support subsequent checks. There is no automatic background completion
-announcement after a turn ends. Required questions must be answered;
+and `poll` support subsequent checks. While the WebSocket remains connected, a
+Conversation-owned watcher polls the active space every two seconds and pushes
+changed page catalogs, including results completed after the foreground wait.
+It adds page cards without generating another spoken reply. Required questions must be answered;
 `question.skip` preserves the backend's required-question check.
 
 The loop accepts one complete tool call at a time, at most eight model rounds,
@@ -126,12 +128,44 @@ through the SDK `cancel` action. IPC failure closes the bridge for that
 conversation/space; reopening the conversation is necessary to create a new
 local bridge, and existing backend work may still exist.
 
-This integration returns text, questions, result metadata and page catalogs.
-It does not implement a browser Renderer or Interax's sequential Player.
-Navigation changes backend selection; no page is claimed to be displayed.
+### Interactive pages in the main Studio UI
+
+After asking for an interactive page (for example, a binary-search visualization),
+look for its title, summary and **打开交互页面** button in the chat. A page may
+arrive after the spoken reply if generation takes longer. Click the button to
+open the page panel; close it to return to the conversation. Multiple available
+results have separate cards. This UI is provided by `/` (`voicemem.html`); the
+legacy `/classic` interface does not provide the page panel.
+
+The display path uses the official SDK throughout:
+
+```text
+Session.poll() -> changed page cards over Studio WebSocket
+  -> user opens a card -> Result.prepare({mode: "display"})
+  -> HTML documents over Studio WebSocket -> upstream createIframeRenderer
+  -> sandbox load, fonts and paint ready -> Presentation.confirmDisplayed()
+  -> page postMessage -> Studio WebSocket -> Session.submitInteraction(data)
+  -> revised results -> updated page cards
+```
+
+Polling lists pages without acquiring them, so discovering several pages does
+not invalidate an active Presentation. Clicking a card captures its Session,
+item revision and a fresh selection token. Only that selection can confirm
+display or submit GUI data; old socket callbacks and switched spaces cannot
+confirm the new page. Actual rendering failure calls `reportFailure`. Errors
+appear in the panel. Updated versions replace the relevant cards and close an
+outdated open panel; open the latest card to view the revision. Disconnect closes
+the panel and releases its renderer listeners and local watcher tasks.
+
+Studio serves only Interax's `browser.js` and `src/viewport.js` renderer assets
+from the configured checkout. The upstream renderer uses a sandbox iframe with
+scripts/forms, checks postMessage source windows and preserves the artifact's
+design viewport. HTML content goes directly to the browser, outside model
+context and speech. Browser code sends no requests to the Interax backend and
+receives no provider credentials. Existing configuration is sufficient.
+
 VoiceMem speaks its model's answer through existing TTS; that is not an Interax
-playback receipt. Interactive generated pages remain backend artifacts until
-a renderer integration is added. Browser code does not call Interax directly.
+playback receipt. Interax's sequential Player is still outside this integration.
 
 ## Verification
 
@@ -140,18 +174,26 @@ Offline checks using existing dependencies only:
 ```bash
 python -m unittest evals.test_interax_integration evals.test_deepseek_reply
 node evals/test_interax_bridge.mjs
+node evals/test_interax_pages.mjs
+node evals/test_transcript_ui.cjs
 git diff --check
 ```
 
 The Node regression imports the real upstream SDK and wrappers and supplies a
 fake fetch implementation; it verifies outgoing commands, retry identity,
-request-scoped results, questions, incomplete results and forbidden receipts.
+request-scoped results, questions, incomplete results, late HTML retrieval,
+revision changes, display receipts, GUI submissions and forbidden playback receipts.
 Python regressions use fake provider streams/HTTP and test tool-result roundtrips,
 fragmented arguments, duplicate submission prevention, cancellation, ownership,
-configuration and local IPC disposal. They never start Interax or Studio.
+configuration, page watcher/action ownership and local IPC disposal. The page UI
+regression uses a DOM/renderer fixture to verify readiness, errors and stale
+selection handling; it is not a real browser rendering test. These checks never
+start Interax or Studio. On Windows, run Python checks with `PYTHONUTF8=1` so
+existing UTF-8 fixtures and test subprocesses use their intended encoding.
 
 **Needs Linux runtime verification:** Python 3.12 with the deployment's Node and
 read-only SDK checkout; model-provider tool calling with real credentials;
 backend connectivity and proxy prefix; long-running generation and recovery;
-two browser sessions/Memory Spaces; real audio interruption and disconnect;
+two browser sessions/Memory Spaces; actual binary-search HTML rendering, controls,
+display confirmation and revised page entry; real audio interruption and disconnect;
 latency and any container-specific image/mount/network configuration.

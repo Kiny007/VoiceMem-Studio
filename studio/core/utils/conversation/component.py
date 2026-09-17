@@ -328,6 +328,13 @@ class Conversation:
             except Exception as e:
                 print(f'[web] 回复收尾失败：{type(e).__name__}: {e}', flush=True)
         bridges = getattr(self, 'interax_sessions', {})
+        page_tasks = list(getattr(self, 'interax_watchers', {}).values())
+        action_task = getattr(self, 'interax_action_task', None)
+        if action_task is not None:
+            page_tasks.append(action_task)
+        for page_task in page_tasks:
+            page_task.cancel()
+        await asyncio.gather(*page_tasks, return_exceptions=True)
         await asyncio.gather(*(bridge.aclose() for bridge in bridges.values()))
         bridges.clear()
 
@@ -409,6 +416,75 @@ class Conversation:
             if self.agent.BARGE_DEBUG:
                 print(f'[unfinished] 用户续说，合并为 {pending.text!r}', flush=True)
         return pending
+
+    def watch_interax_pages(self, space, bridge):
+        """Keep late page results visible for the owning socket and Memory Space."""
+        if not hasattr(self, 'interax_watchers'):
+            self.interax_watchers = {}
+        if space in self.interax_watchers:
+            return
+
+        async def watch():
+            previous = None
+            failed = False
+            while True:
+                await asyncio.sleep(2)
+                if self.agent.ACTIVE_SPACE != space or bridge.process is None:
+                    continue
+                try:
+                    pages = await bridge.pages()
+                    if self.agent.ACTIVE_SPACE != space:
+                        continue
+                    if pages != previous or failed:
+                        await self.sock.send_json({"type": "interax_pages", "space": space,
+                                                   "pages": pages})
+                        previous = pages
+                    failed = False
+                except Exception:
+                    if not failed:
+                        await self.sock.send_json({"type": "interax_page_error", "space": space,
+                                                   "error": "页面状态查询失败，请检查 Interax 连接。"})
+                    failed = True
+                    if bridge.closed or bridge.failed:
+                        return
+
+        task = asyncio.create_task(watch())
+        self.interax_watchers[space] = task
+        task.add_done_callback(self.reply_done)
+
+    async def interax_page_action(self, data):
+        """Schedule bounded page I/O without blocking microphone capture."""
+        space = data.get("space")
+        token = data.get("token")
+        action = data.get("action")
+        bridge = self.interax_sessions.get(space) if isinstance(space, str) else None
+        response = {"type": "interax_page_result", "space": space, "token": token, "action": action}
+        task = getattr(self, 'interax_action_task', None)
+        if (bridge is None or space != self.agent.ACTIVE_SPACE or not isinstance(token, str)
+                or not token or len(token) > 100 or not isinstance(action, str)
+                or action not in {"openPage", "confirmPage", "failPage", "interact"}
+                or (task is not None and not task.done())):
+            await self.sock.send_json({**response, "ok": False, "error": "页面会话已改变或正在处理，请重新打开页面。"})
+            return
+        parameters = {"token": token}
+        if action == "openPage":
+            parameters["page"] = data.get("page")
+        elif action == "failPage":
+            parameters["message"] = str(data.get("message") or "Page rendering failed")[:1000]
+        elif action == "interact":
+            parameters["data"] = data.get("data")
+
+        async def run():
+            try:
+                result = await bridge.page_action(action, **parameters)
+                if self.agent.ACTIVE_SPACE == space:
+                    await self.sock.send_json({**response, "ok": True, "result": result})
+            except Exception as error:
+                await self.sock.send_json({**response, "ok": False,
+                                           "error": getattr(error, "detail", {"code": "page_action_failed"})})
+
+        self.interax_action_task = asyncio.create_task(run())
+        self.interax_action_task.add_done_callback(self.reply_done)
 
     async def route(self, pending):
         if self.early['task'] is not None and (self.early.get('space') != self.agent.ACTIVE_SPACE or self.early.get('memory_vm') is not self.agent.vm):
@@ -496,6 +572,7 @@ class Conversation:
                     if bridge is None:
                         bridge = Interax(self.interax_settings)
                         self.interax_sessions[context_space] = bridge
+                    self.watch_interax_pages(context_space, bridge)
                     handler = ToolLoop(bridge, current=lambda: self.agent.ACTIVE_SPACE == context_space and self.agent.vm is memory_vm)
                 with reply_tool_handler(handler):
                     await self.agent.voicemem_llm_tts(pending, send_json, send_pcm, self.owner, timeline, said=reply_state, context_session=self.context_session, context_space=context_space, memory_vm=memory_vm)
@@ -532,4 +609,4 @@ class Conversation:
         task.add_done_callback(self.reply_done)
 
     def listen(self):
-        return self.agent._session_anticipate(self.context_session, self.sock, on_speech=self.stop_reply, owner=self.owner, is_busy=self.hearing, said=lambda : self.turn['reply']['text'] if self.hearing() or time.monotonic() < self.turn['echo_until'] else '', on_candidate=self.pause_candidate, on_candidate_reject=self.resume_candidate, on_playback_checkpoint=self.playback_checkpoint, on_filler_done=self.filler_done, on_close=self.close_session, on_early=self.start_early, on_early_cancel=self.drop_early, on_speech_start=self.prewarm_local, textless_confirm_s=0.2, turn_taking=self.turn_taking)
+        return self.agent._session_anticipate(self.context_session, self.sock, on_speech=self.stop_reply, owner=self.owner, is_busy=self.hearing, said=lambda : self.turn['reply']['text'] if self.hearing() or time.monotonic() < self.turn['echo_until'] else '', on_candidate=self.pause_candidate, on_candidate_reject=self.resume_candidate, on_playback_checkpoint=self.playback_checkpoint, on_filler_done=self.filler_done, on_interax_page_action=self.interax_page_action, on_close=self.close_session, on_early=self.start_early, on_early_cancel=self.drop_early, on_speech_start=self.prewarm_local, textless_confirm_s=0.2, turn_taking=self.turn_taking)

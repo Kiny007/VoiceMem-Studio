@@ -186,7 +186,9 @@ Interax 后端能力可通过服务端官方 SDK 桥接启用，支持 `llm_tts`
 DeepSeek/Qwen/OpenAI 回复模型。配置 `STUDIO_INTERAX_BASE_URL`，并为 Studio
 运行环境提供 Node >=22.12 和 Interax 源码；详细配置、能力路由、结果范围与
 Linux 验证步骤见 [Interax 接入说明](../docs/interax.md)。此模式关闭提前生成，
-只在确认后的用户回合执行工具；页面 Renderer 和逐页 Player 尚未接入。
+只在确认后的用户回合执行工具。生成页面后，主界面聊天中会出现“打开交互页面”
+入口，点击后通过 Interax 官方 sandbox Renderer 展示；较慢的结果会继续查询并更新。
+页面交互可回传，逐页 Player 尚未接入。
 
 ## 可选：CUDA 性能验证
 

@@ -270,6 +270,21 @@ def build_app(mode, session, classify, snapshot=None, audio_of=None, spaces=None
 
     _NOCACHE = {"Cache-Control": "no-store"}
 
+    @app.get("/interax-pages.js")
+    def interax_pages_script():
+        return FileResponse(HERE / "interax-pages.js", headers=_NOCACHE,
+                            media_type="application/javascript")
+
+    @app.get("/interax-sdk/{asset:path}")
+    def interax_renderer_asset(asset: str):
+        from studio.core.utils.interax.initialize import configuration
+        settings = configuration()
+        # Serve only the upstream renderer's module graph, never the source tree.
+        if settings is None or asset not in {"browser.js", "src/viewport.js"}:
+            raise HTTPException(404)
+        return FileResponse(settings.root / "src/interax_sdk" / asset,
+                            headers=_NOCACHE, media_type="application/javascript")
+
     @app.get("/pcm-player-worklet.js")
     def pcm_player_worklet():
         return FileResponse(HERE / "pcm-player-worklet.js", headers=_NOCACHE,

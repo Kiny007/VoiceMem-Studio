@@ -103,6 +103,16 @@ class Interax:
     async def execute(self, method, parameters):
         return await self.call({"op": "execute", "method": method, "parameters": parameters})
 
+    async def pages(self):
+        """Poll available page versions without acquiring or confirming them."""
+        return await self.call({"op": "pages"})
+
+    async def page_action(self, action, **parameters):
+        """Execute a browser-owned display or interaction through the SDK."""
+        if action not in {"openPage", "confirmPage", "failPage", "interact"}:
+            raise ValueError("Unknown page action")
+        return await self.call({"op": action, **parameters})
+
     async def _stop_process(self):
         process = self.process
         if process is None:

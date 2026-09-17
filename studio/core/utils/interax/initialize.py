@@ -36,6 +36,7 @@ def check(settings, *, mode, provider):
     if mode != "llm_tts" or provider not in {"deepseek", "qwen", "openai"}:
         raise ValueError("Interax requires llm_tts with deepseek, qwen or openai")
     for relative in ("src/interax_sdk/index.js", "src/interax_sdk/package.json",
+                     "src/interax_sdk/browser.js", "src/interax_sdk/src/viewport.js",
                      "demo/web/catalog.js", "demo/web/controller.js"):
         if not (settings.root / relative).is_file():
             raise ValueError(f"STUDIO_INTERAX_ROOT is missing {relative}")

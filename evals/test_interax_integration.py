@@ -309,6 +309,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             turn={}, cached_ack=Mock(return_value=None), reply_done=lambda task: task.exception(),
             turn_taking=SimpleNamespace(decide_handoff=lambda **kwargs: SimpleNamespace(kind=HandoffKind.DIRECT),
                                        start_handoff=Mock(), start_reply=Mock(), finish_reply=Mock()))
+        session.watch_interax_pages = Mock()
         pending = Pending("request", "", None)
         for space in ("space_a", "space_b", "space_a"):
             agent.ACTIVE_SPACE = space
@@ -325,6 +326,110 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(seen[-1])
         for bridge in session.interax_sessions.values():
             await bridge.aclose()
+
+
+class PageDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    def conversation(self):
+        from studio.core.utils.conversation.component import Conversation
+        session = Conversation.__new__(Conversation)
+        session.agent = SimpleNamespace(ACTIVE_SPACE="space_a")
+        session.sock = SimpleNamespace(send_json=AsyncMock())
+        session.interax_sessions = {"space_a": SimpleNamespace(page_action=AsyncMock(return_value={"documents": []}))}
+        return session
+
+    async def test_browser_actions_preserve_scope_and_do_not_block_capture(self):
+        session = self.conversation()
+        bridge = session.interax_sessions["space_a"]
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        async def action(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return {"documents": [{"content": "<html>fixture</html>"}]}
+        bridge.page_action.side_effect = action
+        data = {"space": "space_a", "token": "selected", "action": "openPage", "page": {"itemId": "one"}}
+        await session.interax_page_action(data)
+        await entered.wait()
+        self.assertFalse(session.interax_action_task.done())
+        await session.interax_page_action({**data, "space": "space_b"})
+        self.assertFalse(session.sock.send_json.await_args.args[0]["ok"])
+        self.assertEqual(bridge.page_action.await_count, 1)
+        release.set()
+        await session.interax_action_task
+        result = session.sock.send_json.await_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["token"], "selected")
+        self.assertIn("fixture", result["result"]["documents"][0]["content"])
+
+    async def test_stale_result_and_page_failures_are_not_confirmations(self):
+        session = self.conversation()
+        bridge = session.interax_sessions["space_a"]
+        async def changed(*args, **kwargs):
+            session.agent.ACTIVE_SPACE = "space_b"
+            return {}
+        bridge.page_action.side_effect = changed
+        await session.interax_page_action({"space": "space_a", "token": "one", "action": "confirmPage"})
+        await session.interax_action_task
+        session.sock.send_json.assert_not_awaited()
+        session.agent.ACTIVE_SPACE = "space_a"
+        bridge.page_action.side_effect = BridgeError({"code": "stale_presentation"})
+        await session.interax_page_action({"space": "space_a", "token": "one", "action": "confirmPage"})
+        await session.interax_action_task
+        result = session.sock.send_json.await_args.args[0]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "stale_presentation")
+
+    async def test_late_pages_are_deduplicated_and_revisions_delivered(self):
+        session = self.conversation()
+        bridge = session.interax_sessions["space_a"]
+        bridge.process = object()
+        bridge.failed = bridge.closed = False
+        first = [{"itemId": "one", "revision": 1}]
+        revised = [{"itemId": "one", "revision": 2}]
+        bridge.pages = AsyncMock(side_effect=[[], first, first, revised])
+        finished = asyncio.Event()
+        calls = 0
+        async def tick(_):
+            nonlocal calls
+            calls += 1
+            if calls > 4:
+                finished.set()
+                await asyncio.Event().wait()
+        with patch("studio.core.utils.conversation.component.asyncio.sleep", side_effect=tick):
+            session.watch_interax_pages("space_a", bridge)
+            await finished.wait()
+            task = session.interax_watchers["space_a"]
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        events = [call.args[0] for call in session.sock.send_json.await_args_list]
+        self.assertEqual([event["pages"] for event in events], [[], first, revised])
+        self.assertTrue(all(event["space"] == "space_a" for event in events))
+
+    async def test_page_ipc_uses_dedicated_operations(self):
+        bridge = Interax(None)
+        bridge.call = AsyncMock(return_value={})
+        await bridge.page_action("confirmPage", token="one")
+        bridge.call.assert_awaited_with({"op": "confirmPage", "token": "one"})
+        with self.assertRaises(ValueError):
+            await bridge.page_action("execute", token="one")
+
+    async def test_disconnect_reaps_page_watchers_and_actions(self):
+        session = self.conversation()
+        session.prewarm = {"closed": False}
+        session.stop_prewarm = Mock()
+        session.drop_early = AsyncMock()
+        session.turn = {"task": None}
+        watcher = asyncio.create_task(asyncio.Event().wait())
+        action = asyncio.create_task(asyncio.Event().wait())
+        session.interax_watchers = {"space_a": watcher}
+        session.interax_action_task = action
+        bridge = session.interax_sessions["space_a"]
+        bridge.aclose = AsyncMock()
+        await session.close_session()
+        self.assertTrue(watcher.cancelled())
+        self.assertTrue(action.cancelled())
+        bridge.aclose.assert_awaited_once()
+        self.assertEqual(session.interax_sessions, {})
 
 
 class ConfigurationTests(unittest.TestCase):

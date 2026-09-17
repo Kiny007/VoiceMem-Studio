@@ -17,7 +17,7 @@ class Capture:
                          on_playback_checkpoint=None, on_filler_done=None, on_early=None,
                          on_early_cancel=None,
                          on_speech_start=None, textless_confirm_s=None,
-                         turn_taking=None):
+                         turn_taking=None, on_interax_page_action=None):
         """Yield confirmed turns while forwarding audio, playback, and cancellation events."""
         pause_gate = PauseGate()
         stream = open_stream(self.vm, spec_min_chars=self.SPEC_MIN_CHARS, gamble_s=self.GAMBLE_S,
@@ -89,6 +89,10 @@ class Capture:
                 return
             if msg.get("text"):
                 data = json.loads(msg["text"])
+                if data.get("type") == "interax_page_action":
+                    if on_interax_page_action:
+                        await on_interax_page_action(data)
+                    continue
                 if data.get("type") == "playback_checkpoint":
                     if on_playback_checkpoint:
                         await on_playback_checkpoint(data)
