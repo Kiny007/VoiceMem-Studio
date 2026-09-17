@@ -17,6 +17,8 @@ function backend() {
   let pageRevision = 0;
   let applied = false;
   let viewId = 0;
+  let queryFailure = false;
+  let progressGate = null;
   const reference = () => ({ artifact_id: `artifact_${pageRevision}`, media_type: "text/html" });
   const progress = () => ({ id: requestId, stage, status: "accepted", request: { query: "fixture" } });
   const item = (id, owner) => ({ item_id: id, request_id: owner, item_revision: pageRevision || 1,
@@ -30,9 +32,14 @@ function backend() {
     failReads() { failReads = true; },
     retrySubmit() { retrySubmit = true; },
     publishPage() { pageRevision++; applied = false; },
+    setQueryFailure(value) { queryFailure = value; },
+    holdProgress() { let release; progressGate = new Promise(resolve => { release = resolve; }); return release; },
     async fetch(url, options) {
       assert(url.pathname.startsWith("/proxy/v1/"), "SDK must preserve the proxy prefix");
       const relative = url.pathname.slice("/proxy/v1/".length);
+      if (queryFailure && (relative.endsWith('/overview') || relative.endsWith('/updates'))) {
+        return new Response(JSON.stringify({ error: 'Fixture unavailable' }), { status: 422 });
+      }
       const body = options.body ? JSON.parse(options.body) : null;
       calls.push({ relative, body });
       let result;
@@ -61,6 +68,7 @@ function backend() {
       } else if (relative.includes("/artifacts/")) {
         return new Response('<!doctype html><html><head></head><body><button>Next search step</button></body></html>');
       } else if (relative.includes("/requests/")) {
+        if (progressGate) await progressGate;
         if (failReads) { result = { error: "Read failed" }; status = 422; }
         else result = progress();
       } else if (relative.endsWith("/overview")) {
@@ -83,9 +91,12 @@ function backend() {
 
 async function fixture(run) {
   const server = backend();
+  const updates = [];
+  let notify;
+  const notified = new Promise(resolve => { notify = resolve; });
   const bridge = await createBridge({ root, baseUrl: "https://interax.invalid/proxy/", allowedMethods: methods,
-    fetch: server.fetch, waitMs: 5 });
-  try { await bridge.describe(); await run(bridge, server); }
+    fetch: server.fetch, waitMs: 5, onDelivery: state => { updates.push(structuredClone(state)); notify(); } });
+  try { await bridge.describe(); await run(bridge, server, { updates, notified }); }
   finally { bridge.dispose(); }
 }
 
@@ -169,8 +180,49 @@ await fixture(async (bridge, server) => {
   await bridge.failPage("selection_two", "Renderer failed");
   assert(server.calls.some((call) => call.body?.name === "view.failed"));
   await bridge.execute("createSession", {});
-  await assert.rejects(() => bridge.openPage(revised[0], "another_session"), /session/);
   await assert.rejects(() => bridge.confirmPage("selection_two"), /stale/);
+  server.publishPage();
+  const all = await bridge.delivery();
+  const latePage = all.pages.find(page => page.sessionId === revised[0].sessionId);
+  assert.equal(latePage.revision, 3, 'Earlier Sessions deliver revisions after a new goal is selected');
+  await bridge.openPage(latePage, "earlier_session");
+  await bridge.confirmPage("earlier_session");
+  await bridge.interact("earlier_session", { action: "next" });
+  assert.equal(server.calls.filter(call => call.body?.name === 'ui_action').at(-1).relative,
+    `sessions/${revised[0].sessionId}/commands`, 'Old pages interact with their own Session');
+  await assert.rejects(() => bridge.openPage({ ...revised[0], sessionId: 'foreign_session' }, 'foreign'), /session/i);
   assert(!server.calls.some((call) => call.body?.name?.startsWith("playback.")));
+});
+await fixture(async (bridge, server, { updates, notified }) => {
+  await bridge.execute('createSession', {});
+  const release = server.holdProgress();
+  let finished = false;
+  const submit = bridge.execute('submit', { text: 'Make a page' }).then(result => { finished = true; return result; });
+  await notified;
+  assert.equal(finished, false, 'Acknowledgement is published while the foreground wait is still pending');
+  assert.equal(updates[0].tasks[0].stage, 'accepted');
+  assert.equal(updates[0].tasks[0].title, 'Make a page');
+  assert.deepEqual(updates[0].pages, []);
+  release();
+  await submit;
+  assert.equal(updates.at(-1).tasks[0].stage, 'completed');
+});
+await fixture(async (bridge, server) => {
+  await bridge.execute('createSession', {});
+  server.setStage('waiting');
+  await bridge.execute('submit', { text: 'Make a page' });
+  let state = await bridge.delivery();
+  assert.equal(state.tasks[0].questions[0].text, 'Choose', 'Session questions are attached to the waiting request');
+  server.publishPage();
+  state = await bridge.delivery();
+  server.setQueryFailure(true);
+  const failed = await bridge.delivery();
+  assert.deepEqual(failed.pages, state.pages, 'Transient query failure preserves known pages');
+  assert.equal(failed.errors.length, 1);
+  server.setQueryFailure(false);
+  server.setStage('failed');
+  const recovered = await bridge.delivery();
+  assert.deepEqual(recovered.errors, []);
+  assert.equal(recovered.tasks[0].stage, 'failed');
 });
 console.log("Interax SDK/wrapper and page delivery offline contracts passed");

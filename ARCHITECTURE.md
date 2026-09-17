@@ -96,13 +96,23 @@ handler. Tool-enabled rounds buffer text until the model's tool/text decision is
 complete; only final text reaches the existing speech pipeline. Ordinary
 disabled-mode streaming and memory behavior retain their existing contracts.
 This mode retrieves actual text, questions, page catalogs and results. Each
-Conversation owns a page watcher per bridge, polling the active Memory Space
-every two seconds through the same serialized IPC. Changed page catalogs reach
-the browser even after the foreground reply finishes. Disconnect cancels these
+Conversation owns a delivery watcher per bridge, polling all bridge-owned
+Interax Sessions in the active Memory Space every two seconds through serialized
+IPC. Submission acknowledgements also emit delivery notifications on that IPC
+stream before the foreground wait completes; the reader distinguishes these
+notifications from command responses, including while draining cancelled calls.
+Task stages, waiting questions, result failures, query errors and page catalogs
+reach the browser independently of the spoken reply. Query failures retain the
+last known state for the affected Session; successful reads clear the error.
+Disconnect cancels these
 watchers and the bounded page-action task before closing bridges. Page actions
 are scheduled outside the capture receive loop so SDK latency cannot block audio.
 
-The main Studio UI shows page cards. Opening a card uses the bound Result's
+The main Studio UI shows a task card as soon as Interax acknowledges a Request,
+then adds page buttons when results become displayable. Task ownership is bound
+to the browser chat by Memory Space, Interax Session and Request; later updates
+retain that owner when another chat is created. Results from earlier Sessions
+remain accessible without changing the model's selected Session. Opening a card uses the bound Result's
 `prepare({mode: "display"})`; only this selection downloads the HTML. Studio
 serves the upstream `browser.js` renderer and its viewport helper verbatim via
 two allowlisted assets. The renderer owns sandbox isolation, source-checked
@@ -111,7 +121,9 @@ postMessage interactions and load/font/paint readiness. Its completion triggers
 render failure uses `reportFailure()`. GUI data uses `Session.submitInteraction()`
 after display confirmation. Selection tokens, session/revision checks and socket/
 space ownership reject stale callbacks. Revisions replace page cards; users open
-the new version explicitly. HTML bypasses model context and TTS. The browser
+the new version explicitly. Disconnect marks cards as no longer updating and
+disables their page buttons. Session bindings remain connection-scoped; reconnect
+does not restore previous backend tasks. HTML bypasses model context and TTS. The browser
 remains a client of Studio only. No Interax Player or playback receipts are
 implemented. Deployment and offline regressions are in `docs/interax.md`.
 

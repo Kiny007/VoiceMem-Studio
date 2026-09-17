@@ -80,15 +80,21 @@ reuse the current Session; a new goal creates a new Session. Only sessions
 created by the current bridge are accessible; global listing, arbitrary session
 opening, deletion and display/playback receipts are not exposed to the model.
 
-Submit uses its returned Request handle to wait up to 15 seconds, then obtains
-request-scoped results and a snapshot. The response preserves submission
+Submit publishes an accepted task card immediately after receiving its Request
+handle, before waiting up to 15 seconds and obtaining request-scoped results and
+a snapshot. Delivery notifications share the local IPC stream with tagged
+command responses and are processed while waiting or draining a cancelled call.
+The response preserves submission
 identity when subsequent reads fail. `id=null` uses `session.poll()` directly.
 `waiting`, `failed`, `rejected`, `cancelled`, `superseded` and `interrupted` retain
 their actual meaning. A timeout is not completion; `request.progress/wait/results`
 and `poll` support subsequent checks. While the WebSocket remains connected, a
-Conversation-owned watcher polls the active space every two seconds and pushes
-changed page catalogs, including results completed after the foreground wait.
-It adds page cards without generating another spoken reply. Required questions must be answered;
+Conversation-owned watcher polls all bridge-owned Interax Sessions in the active
+space every two seconds and pushes task stages, waiting questions, result
+failures and changed page catalogs, including results completed after the
+foreground wait or after a new goal selects another Session. Read failures keep
+previous results visible with a stale-state notice until a successful query.
+It updates task cards without generating another spoken reply. Required questions must be answered;
 `question.skip` preserves the backend's required-question check.
 
 The loop accepts one complete tool call at a time, at most eight model rounds,
@@ -131,7 +137,9 @@ local bridge, and existing backend work may still exist.
 ### Interactive pages in the main Studio UI
 
 After asking for an interactive page (for example, a binary-search visualization),
-look for its title, summary and **打开交互页面** button in the chat. A page may
+look for a task card once the submission is acknowledged. It shows generation,
+waiting-for-answer, failure, cancellation or completion state. Displayable
+results add their title, summary and **打开交互页面** button. A page may
 arrive after the spoken reply if generation takes longer. Click the button to
 open the page panel; close it to return to the conversation. Multiple available
 results have separate cards. This UI is provided by `/` (`voicemem.html`); the
@@ -140,7 +148,8 @@ legacy `/classic` interface does not provide the page panel.
 The display path uses the official SDK throughout:
 
 ```text
-Session.poll() -> changed page cards over Studio WebSocket
+Request acknowledgement -> task card over Studio WebSocket
+Session.poll() for each owned Session -> task states and page cards
   -> user opens a card -> Result.prepare({mode: "display"})
   -> HTML documents over Studio WebSocket -> upstream createIframeRenderer
   -> sandbox load, fonts and paint ready -> Presentation.confirmDisplayed()
@@ -148,6 +157,9 @@ Session.poll() -> changed page cards over Studio WebSocket
   -> revised results -> updated page cards
 ```
 
+Task cards bind Session and Request IDs to their original browser chat; creating
+another chat does not redirect already tracked tasks. Earlier Sessions' page
+buttons use the original Session for rendering and GUI submissions.
 Polling lists pages without acquiring them, so discovering several pages does
 not invalidate an active Presentation. Clicking a card captures its Session,
 item revision and a fresh selection token. Only that selection can confirm
@@ -155,7 +167,10 @@ display or submit GUI data; old socket callbacks and switched spaces cannot
 confirm the new page. Actual rendering failure calls `reportFailure`. Errors
 appear in the panel. Updated versions replace the relevant cards and close an
 outdated open panel; open the latest card to view the revision. Disconnect closes
-the panel and releases its renderer listeners and local watcher tasks.
+the panel and releases its renderer listeners and local watcher tasks. Cards
+then show that updates have stopped and their page buttons are disabled. The
+backend may continue working; connection-scoped bindings are not restored on
+reconnect, so keep the conversation connected to receive late results.
 
 Studio serves only Interax's `browser.js` and `src/viewport.js` renderer assets
 from the configured checkout. The upstream renderer uses a sandbox iframe with

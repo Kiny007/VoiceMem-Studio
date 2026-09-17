@@ -424,21 +424,30 @@ class Conversation:
         if space in self.interax_watchers:
             return
 
+        previous = None
+
+        async def publish(state):
+            nonlocal previous
+            if self.agent.ACTIVE_SPACE == space and state != previous:
+                await self.sock.send_json({"type": "interax_state", "space": space, **state})
+                previous = state
+
+        bridge.on_delivery = publish
+
         async def watch():
-            previous = None
+            nonlocal previous
             failed = False
             while True:
                 await asyncio.sleep(2)
                 if self.agent.ACTIVE_SPACE != space or bridge.process is None:
                     continue
                 try:
-                    pages = await bridge.pages()
+                    state = await bridge.delivery()
                     if self.agent.ACTIVE_SPACE != space:
                         continue
-                    if pages != previous or failed:
-                        await self.sock.send_json({"type": "interax_pages", "space": space,
-                                                   "pages": pages})
-                        previous = pages
+                    if failed:
+                        previous = None
+                    await publish(state)
                     failed = False
                 except Exception:
                     if not failed:

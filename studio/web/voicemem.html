@@ -1080,7 +1080,7 @@ const SPACE_IDS=[];
 
 /* ── 会话 ─────────────────────────────────────────────────────────── */
 function blankUI(){ return { input:'', reply:'', speaker:'你',
-  tags:{emo:'',ent:'',sch:''}, recallL:[], recallR:[], interaxPages:[] }; }
+  tags:{emo:'',ent:'',sch:''}, recallL:[], recallR:[], interaxPages:[], interaxTasks:[], interaxErrors:[] }; }
 let sessions=[], currentId=0, nextId=1, activeSpace='demo', searchQ='';
 let interaxPagesUI=null;
 const interaxPagesReady=import('/interax-pages.js').then(({InteraxPages})=>{
@@ -1102,7 +1102,8 @@ function handleInterax(message,socket){
     if(!ui){ toast('交互页面组件加载失败，请刷新页面。'); return; }
     const session=socket.interaxOwners?.get(message.space);
     if(!session) return;
-    if(message.type==='interax_pages') ui.update(session,message.pages,socket);
+    if(message.type==='interax_state') ui.receive(message.space,message,socket);
+    else if(message.type==='interax_pages') ui.update(session,message.pages,socket);
     else if(message.type==='interax_page_result') ui.result(message).catch(error=>console.error('[interax]',error));
     else if(message.type==='interax_page_error') toast(message.error);
   });
@@ -1343,7 +1344,7 @@ function renderChat(){
   const csn=$('chatSpaceName');
   if(csn) csn.textContent=SPACES[s?s.space:activeSpace].name;
   const box=$('chatLog'); box.innerHTML='';
-  if(!s||(!s.turns.length&&!s.ui.interaxPages.length)){
+  if(!s||(!s.turns.length&&!s.ui.interaxPages.length&&!s.ui.interaxTasks.length&&!s.ui.interaxErrors.length)){
     const e=document.createElement('div'); e.className='empty';
     e.innerHTML=i18n('startHint', SPACES[s?s.space:activeSpace].name);
     box.appendChild(e); restoreLiveChatDraft(s); return;
@@ -2453,7 +2454,7 @@ function syncButtons(){
   pauseBtn.disabled=!live; pauseBtn.textContent=paused?i18n('resume'):i18n('pause');
 }
 function endLive(note){
-  interaxPagesUI?.close();
+  interaxPagesUI?.disconnect(ws);
   live=false; paused=false;
   // 挂断就该真的安静下来——底噪的意思是"线还连着"，连都断了还响就成了噪音。
   if(pcmNode) pcmNode.port.postMessage({type:'comfort',db:null});

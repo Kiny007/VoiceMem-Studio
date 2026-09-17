@@ -99,6 +99,43 @@ ui.open(session, page);
 assert(ui.status.textContent.includes('连接已结束'));
 ui.close();
 
+const task = { sessionId: page.sessionId, requestId: 'request_one', title: '<b>Make a page</b>', stage: 'accepted', questions: [] };
+const ownedPage = { ...page, requestId: task.requestId };
+const taskSocket = { interaxOwners: new Map([['space_a', session]]) };
+const texts = element => [element.textContent, ...element.children.flatMap(texts)].join(' ');
+const buttons = element => element.children.flatMap(child => child.type === 'button' ? [child] : buttons(child));
+ui.receive('space_a', { tasks: [task], pages: [], errors: [] }, taskSocket);
+cards.replaceChildren(); ui.cards(session, cards);
+assert.equal(cards.children.length, 1, 'An accepted task has a card before any page exists');
+assert(texts(cards).includes('任务已接收'));
+assert.equal(buttons(cards).length, 0);
+assert.equal(cards.children[0].children[0].textContent, task.title);
+
+ui.receive('space_a', { tasks: [{ ...task, stage: 'waiting', questions: [{ text: 'Which range?', required: true }] }], pages: [], errors: [] }, taskSocket);
+cards.replaceChildren(); ui.cards(session, cards);
+assert(texts(cards).includes('需要回答：Which range?'));
+
+const newer = { space: 'space_a', ui: {} };
+taskSocket.interaxOwners.set('space_a', newer);
+const secondTask = { ...task, sessionId: 'sdk_second', requestId: 'request_two', stage: 'running' };
+ui.receive('space_a', { tasks: [{ ...task, stage: 'completed' }, secondTask], pages: [ownedPage], errors: [] }, taskSocket);
+assert.equal(session.ui.interaxPages.length, 1, 'Late results keep the original chat owner');
+assert.equal(newer.ui.interaxTasks[0].requestId, 'request_two');
+assert.equal(newer.ui.interaxPages.length, 0);
+cards.replaceChildren(); ui.cards(session, cards);
+assert.equal(buttons(cards).length, 1);
+assert.equal(buttons(cards)[0].disabled, false);
+
+ui.receive('space_a', { tasks: [{ ...task, stage: 'failed' }], pages: [ownedPage], errors: [{ sessionId: task.sessionId }] }, taskSocket);
+cards.replaceChildren(); ui.cards(session, cards);
+assert(texts(cards).includes('生成失败'));
+assert(texts(cards).includes('状态查询失败'));
+assert.equal(buttons(cards).length, 1, 'Read failures retain the existing page entry');
+ui.disconnect(taskSocket);
+cards.replaceChildren(); ui.cards(session, cards);
+assert(texts(cards).includes('状态更新已停止'));
+assert.equal(buttons(cards)[0].disabled, true);
+
 // Syntax-check the actual inline scripts, including their WebSocket dispatch.
 const html = readFileSync(new URL('../studio/web/voicemem.html', import.meta.url), 'utf8');
 for (const [, script] of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(script);

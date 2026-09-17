@@ -386,7 +386,8 @@ class PageDeliveryTests(unittest.IsolatedAsyncioTestCase):
         bridge.failed = bridge.closed = False
         first = [{"itemId": "one", "revision": 1}]
         revised = [{"itemId": "one", "revision": 2}]
-        bridge.pages = AsyncMock(side_effect=[[], first, first, revised])
+        states = [{"tasks": [], "pages": pages, "errors": []} for pages in ([], first, first, revised)]
+        bridge.delivery = AsyncMock(side_effect=states)
         finished = asyncio.Event()
         calls = 0
         async def tick(_):
@@ -404,6 +405,41 @@ class PageDeliveryTests(unittest.IsolatedAsyncioTestCase):
         events = [call.args[0] for call in session.sock.send_json.await_args_list]
         self.assertEqual([event["pages"] for event in events], [[], first, revised])
         self.assertTrue(all(event["space"] == "space_a" for event in events))
+        self.assertTrue(all(event["type"] == "interax_state" for event in events))
+
+    async def test_submission_notification_is_visible_before_poll_finishes(self):
+        session = self.conversation()
+        bridge = session.interax_sessions["space_a"]
+        bridge.process = object()
+        bridge.failed = bridge.closed = False
+        bridge.delivery = AsyncMock()
+        session.watch_interax_pages("space_a", bridge)
+        state = {"tasks": [{"requestId": "one", "stage": "accepted"}], "pages": [], "errors": []}
+        try:
+            await bridge.on_delivery(state)
+            self.assertEqual(session.sock.send_json.await_args.args[0]["tasks"], state["tasks"])
+            await bridge.on_delivery(state)
+            self.assertEqual(session.sock.send_json.await_count, 1)
+            session.agent.ACTIVE_SPACE = "space_b"
+            await bridge.on_delivery({**state, "tasks": []})
+            self.assertEqual(session.sock.send_json.await_count, 1)
+        finally:
+            task = session.interax_watchers["space_a"]
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_ipc_notifications_do_not_consume_command_response(self):
+        bridge = Interax(None)
+        state = {"tasks": [{"stage": "accepted"}], "pages": [], "errors": []}
+        reader = asyncio.StreamReader()
+        reader.feed_data((json.dumps({"event": "delivery", "value": state}) + "\n").encode())
+        reader.feed_data(b'{"id":1,"ok":true,"value":{"submission":{"id":"one"}}}\n')
+        bridge.process = SimpleNamespace(stdout=reader, stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()))
+        bridge.on_delivery = AsyncMock()
+        result = await bridge._exchange({"op": "execute", "method": "submit"})
+        bridge.on_delivery.assert_awaited_once_with(state)
+        self.assertEqual(result["submission"]["id"], "one")
+        self.assertEqual(bridge.last_operation["response"]["value"], result)
 
     async def test_page_ipc_uses_dedicated_operations(self):
         bridge = Interax(None)

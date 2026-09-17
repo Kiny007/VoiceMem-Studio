@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import readline from "node:readline";
 
-export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitMs = 15000 }) {
+export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitMs = 15000, onDelivery = () => {} }) {
   const upstream = (relative) => import(pathToFileURL(path.join(root, relative)).href);
   const { InteraxClient } = await upstream("src/interax_sdk/index.js");
   const { methods } = await upstream("demo/web/catalog.js");
@@ -24,11 +24,43 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
   const controller = new FrontendController(context, { baseUrl });
   let skills = [];
   let prepared = null;
+  const deliveries = new Map();
   const scope = () => ({ sessionId: context.session?.id ?? null, requestId: context.request?.id ?? null });
   const pages = (snapshot) => (snapshot?.items || [])
     .filter((item) => item.canDisplay && item.documents?.length)
-    .map((item) => ({ sessionId: context.session.id, itemId: item.id,
+    .map((item) => ({ sessionId: snapshot.sessionId, requestId: item.requestId, itemId: item.id,
       revision: item.revision, title: item.title, summary: item.summary }));
+  const delivery = () => ({
+    tasks: [...deliveries.values()].flatMap((state) => state.tasks),
+    pages: [...deliveries.values()].flatMap((state) => state.pages),
+    errors: [...deliveries.values()].flatMap((state) => state.error ? [state.error] : []),
+  });
+  const remember = (snapshot) => {
+    const previous = deliveries.get(snapshot.sessionId);
+    const tasks = new Map((previous?.tasks || []).map((task) => [task.requestId, task]));
+    for (const request of snapshot.requests) {
+      const items = snapshot.items.filter((item) => item.requestId === request.id && item.validity === 'current');
+      tasks.set(request.id, {
+        sessionId: snapshot.sessionId, requestId: request.id,
+        title: request.request?.query || tasks.get(request.id)?.title || 'Interax 任务',
+        stage: request.stage || 'unknown',
+        failedResults: items.filter((item) => item.generation === 'failed').length,
+        questions: snapshot.questions.filter((question) => question.status === 'open' && request.stage === 'waiting')
+          .map((question) => ({ id: question.id, text: question.payload?.text || '', required: question.payload?.required !== false })),
+      });
+    }
+    deliveries.set(snapshot.sessionId, { tasks: [...tasks.values()], pages: pages(snapshot) });
+  };
+  const accepted = (session, request, title) => {
+    if (!request.id) return;
+    const state = deliveries.get(session.id) || { tasks: [], pages: [] };
+    state.tasks = [...state.tasks.filter((task) => task.requestId !== request.id), {
+      sessionId: session.id, requestId: request.id, title: title || '页面交互',
+      stage: 'accepted', questions: [], failedResults: 0,
+    }];
+    deliveries.set(session.id, state);
+    onDelivery(delivery());
+  };
   const selected = (token) => {
     if (!prepared || prepared.token !== token) throw new Error("Page selection is stale; reopen the page");
     return prepared.presentation;
@@ -53,6 +85,8 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
         "request.progress", "request.wait", "request.results", "result.refresh"].includes(method)) prepared = null;
       const value = await controller.execute(method, parameters);
       if (method !== "submit") return { value, ...scope() };
+      // Publish acknowledgement before the bounded wait occupies the IPC channel.
+      accepted(context.session, value, parameters.text);
       // Acknowledgement and generated output are separate. Preserve submission
       // identity even when waiting or subsequent reads fail.
       const output = { submission: value, ...scope() };
@@ -69,22 +103,38 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
         }
         output.snapshot = await context.session.poll();
         output.pages = pages(output.snapshot);
+        remember(output.snapshot);
+        onDelivery(delivery());
       } catch (error) {
         output.readError = { name: error.name, status: error.status ?? 0, code: error.code ?? "read_failed" };
       }
       return output;
     },
     async pages() {
-      return context.session ? pages(await context.session.poll()) : [];
+      return (await this.delivery()).pages;
+    },
+    async delivery() {
+      // Keep earlier goals visible after the model selects a new Session.
+      await Promise.all([...client.sessions.values()].map(async (session) => {
+        try {
+          remember(await session.poll({ signal: AbortSignal.timeout(10000) }));
+        } catch (error) {
+          const state = deliveries.get(session.id) || { tasks: [], pages: [] };
+          state.error = { sessionId: session.id, code: error.code || 'query_failed' };
+          deliveries.set(session.id, state);
+        }
+      }));
+      return delivery();
     },
     async openPage(page, token) {
-      if (!token || page.sessionId !== context.session?.id) throw new Error("Page session is no longer selected");
-      const snapshot = await context.session.poll();
+      const session = client.sessions.get(page.sessionId);
+      if (!token || !session) throw new Error("Page session does not belong to this conversation");
+      const snapshot = await session.poll();
       const item = snapshot.items.find((item) => item.id === page.itemId && item.revision === page.revision && item.canDisplay);
       if (!item) throw new Error("Page version is no longer available");
       prepared = null;
       const presentation = await item.prepare({ mode: "display" });
-      prepared = { token, presentation };
+      prepared = { token, presentation, session };
       return { ...page, token, documents: presentation.documents };
     },
     async confirmPage(token) {
@@ -96,9 +146,11 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
     async interact(token, data) {
       const presentation = selected(token);
       if (!presentation.displayed) throw new Error("Page has not been confirmed displayed");
-      const view = await context.session.getView();
+      const session = prepared.session;
+      const view = await session.getView();
       if (!view.applied || view.view_id !== presentation.view.view_id) throw new Error("Displayed page has changed");
-      const result = await context.session.submitInteraction(data);
+      const result = await session.submitInteraction(data);
+      accepted(session, result, '页面交互');
       return result;
     },
     dispose() { prepared = null; client.dispose(); },
@@ -117,7 +169,9 @@ async function main() {
         let value;
         if (message.op === "initialize") {
           if (bridge) throw new Error("Already initialized");
-          bridge = await createBridge(message.parameters);
+          bridge = await createBridge({ ...message.parameters, onDelivery: (value) => {
+            process.stdout.write(JSON.stringify({ event: "delivery", value }) + "\n");
+          } });
           value = true;
         } else if (message.op === "describe") {
           value = await bridge.describe();
@@ -125,6 +179,8 @@ async function main() {
           value = await bridge.execute(message.method, message.parameters);
         } else if (message.op === "pages") {
           value = await bridge.pages();
+        } else if (message.op === "delivery") {
+          value = await bridge.delivery();
         } else if (message.op === "openPage") {
           value = await bridge.openPage(message.page, message.token);
         } else if (message.op === "confirmPage") {

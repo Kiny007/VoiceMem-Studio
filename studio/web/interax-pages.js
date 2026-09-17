@@ -23,8 +23,11 @@ export class InteraxPages {
     this.dialog.close();
   }
 
-  update(session, pages, socket) {
+  update(session, pages, socket, tasks = [], errors = []) {
     session.ui.interaxPages = pages;
+    session.ui.interaxTasks = tasks;
+    session.ui.interaxErrors = errors;
+    session.ui.interaxDisconnected = false;
     session.interaxSocket = socket;
     const active = this.active;
     if (active?.session === session && !pages.some((page) => this.key(page) === this.key(active.page))) {
@@ -34,10 +37,60 @@ export class InteraxPages {
     this.changed(session);
   }
 
+  disconnect(socket) {
+    this.close();
+    for (const session of new Set([...(socket?.interaxOwners?.values() || []), ...(socket?.interaxTaskOwners?.values() || [])])) {
+      session.ui.interaxDisconnected = true;
+      this.changed(session);
+    }
+  }
+
+  receive(space, state, socket) {
+    const owner = socket.interaxOwners?.get(space);
+    if (!owner) return;
+    socket.interaxTaskOwners ||= new Map();
+    const groups = new Map();
+    const group = (item) => {
+      const key = JSON.stringify([space, item.sessionId, item.requestId]);
+      if (!socket.interaxTaskOwners.has(key)) socket.interaxTaskOwners.set(key, owner);
+      const session = socket.interaxTaskOwners.get(key);
+      if (!groups.has(session)) groups.set(session, { tasks: [], pages: [], ids: new Set() });
+      const result = groups.get(session);
+      result.ids.add(item.sessionId);
+      return result;
+    };
+    for (const task of state.tasks || []) group(task).tasks.push(task);
+    for (const page of state.pages || []) group(page).pages.push(page);
+    for (const error of state.errors || []) {
+      if ([...groups.values()].some(result => result.ids.has(error.sessionId))) continue;
+      if (!groups.has(owner)) groups.set(owner, { tasks: [], pages: [], ids: new Set() });
+      groups.get(owner).ids.add(error.sessionId);
+    }
+    if (!groups.size) groups.set(owner, { tasks: [], pages: [], ids: new Set() });
+    for (const [session, result] of groups) {
+      const errors = (state.errors || []).filter(error => result.ids.has(error.sessionId) || !result.ids.size);
+      this.update(session, result.pages, socket, result.tasks, errors);
+    }
+  }
+
   key(page) { return JSON.stringify([page.sessionId, page.itemId, page.revision]); }
 
   cards(session, container) {
-    for (const page of session.ui.interaxPages || []) {
+    const pages = session.ui.interaxPages || [];
+    const errors = session.ui.interaxErrors || [];
+    for (const error of errors) {
+      if ((session.ui.interaxTasks || []).some(task => task.sessionId === error.sessionId)) continue;
+      const status = document.createElement('p');
+      status.textContent = '交互任务状态查询失败，正在重连。';
+      container.append(status);
+    }
+    const stages = {
+      accepted: '任务已接收，正在制作…', evaluating: '正在分析需求…', running: '正在生成…',
+      waiting: '等待你的回答', paused: '任务已暂停', completed: '任务已完成',
+      failed: '生成失败', rejected: '任务未被接受', cancelled: '任务已取消',
+      interrupted: '任务已中断', superseded: '任务已被后续请求替代', unknown: '正在确认任务状态…',
+    };
+    const appendPage = (page, container) => {
       const card = document.createElement('div');
       card.className = 'turn ai interax-card';
       const title = document.createElement('strong');
@@ -47,10 +100,37 @@ export class InteraxPages {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = '打开交互页面';
+      button.disabled = Boolean(session.ui.interaxDisconnected);
       button.onclick = () => this.open(session, page);
       card.append(title, summary, button);
       container.append(card);
+    };
+    const attached = new Set();
+    for (const task of session.ui.interaxTasks || []) {
+      const card = document.createElement('div');
+      card.className = 'turn ai interax-card';
+      const title = document.createElement('strong');
+      title.textContent = task.title || 'Interax 任务';
+      const status = document.createElement('p');
+      const results = pages.filter((page) => page.sessionId === task.sessionId && page.requestId === task.requestId);
+      status.textContent = stages[task.stage] || stages.unknown;
+      if (task.stage === 'completed' && !results.length) status.textContent += '，暂无可打开的交互页面。';
+      if (task.failedResults) status.textContent += ' 部分成果生成失败。';
+      if (errors.some((error) => error.sessionId === task.sessionId)) status.textContent += ' 状态查询失败，正在重连；以上为上次获取的状态。';
+      if (session.ui.interaxDisconnected) status.textContent += ' 连接已结束，状态更新已停止；后端任务可能仍在执行。';
+      card.append(title, status);
+      for (const question of task.questions || []) {
+        const prompt = document.createElement('p');
+        prompt.textContent = `${question.required ? '需要回答：' : '问题：'}${question.text}`;
+        card.append(prompt);
+      }
+      for (const page of results) {
+        attached.add(this.key(page));
+        appendPage(page, card);
+      }
+      container.append(card);
     }
+    for (const page of pages) if (!attached.has(this.key(page))) appendPage(page, container);
   }
 
   action(active, action, extra = {}) {

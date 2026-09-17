@@ -28,6 +28,7 @@ class Interax:
         self.closed = False
         self.failed = False
         self.last_operation = None
+        self.on_delivery = None
 
     async def _start(self):
         if self.process is not None:
@@ -51,10 +52,15 @@ class Interax:
             async with asyncio.timeout(60):
                 self.process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode())
                 await self.process.stdin.drain()
-                line = await self.process.stdout.readline()
-                if not line:
-                    raise ValueError("bridge exited")
-                response = json.loads(line)
+                while True:
+                    line = await self.process.stdout.readline()
+                    if not line:
+                        raise ValueError("bridge exited")
+                    response = json.loads(line)
+                    if response.get("event") != "delivery":
+                        break
+                    if self.on_delivery is not None:
+                        await self.on_delivery(response["value"])
                 if response.get("id") != message["id"]:
                     raise ValueError("out-of-order IPC response")
                 if message["op"] == "execute":
@@ -106,6 +112,10 @@ class Interax:
     async def pages(self):
         """Poll available page versions without acquiring or confirming them."""
         return await self.call({"op": "pages"})
+
+    async def delivery(self):
+        """Read task states and pages for all Sessions owned by this bridge."""
+        return await self.call({"op": "delivery"})
 
     async def page_action(self, action, **parameters):
         """Execute a browser-owned display or interaction through the SDK."""
