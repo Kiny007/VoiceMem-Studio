@@ -10,6 +10,7 @@ async def converse(agent, socket):
     from .utils.turn_taking.pause import needs_continuation
     session = Conversation(agent, socket)
     try:
+        await session.attach_tasks()
         async with aclosing(session.listen()) as turns:
             async for pending in turns:
                 if session.ignore(pending):
@@ -46,13 +47,21 @@ def build_app(agent):
             await agent.realtime_session(socket)
         else:
             await converse(agent, socket)
-    return transport.build_app(
+    from .utils.interax.initialize import configuration
+    from .utils.interax.scheduler import Scheduler
+    settings = configuration()
+    agent.task_scheduler = Scheduler(settings) if settings else None
+    app = transport.build_app(
         agent.MODE, session, lambda *a, **k: agent.vm.classify(*a, **k),
         agent.memory_snapshot, agent.audio_of,
         spaces=(agent.list_spaces, agent.create_space, agent.use_space, lambda: agent.ACTIVE_SPACE),
         set_lang=agent.set_lang, title=transport.make_title_generator(agent.REPLY),
         pet_port=agent.ARGS.port,
     )
+    if agent.task_scheduler:
+        app.add_event_handler('startup', agent.task_scheduler.start)
+        app.add_event_handler('shutdown', agent.task_scheduler.close)
+    return app
 
 
 def main(argv=None):

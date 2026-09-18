@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from dataclasses import replace
+from contextlib import AsyncExitStack
 from studio.core.utils.dialogue.component import CONTROLS, backchannel_policy, is_unfinished
 from studio.core.utils.reply_modes.initialize import DIRECT, MEMORY
 from studio.core.utils.turn_taking.initialize import Backchannel, HandoffKind, TurnTakingStateMachine, wait_for_filler_and_output
@@ -166,6 +167,10 @@ class Conversation:
         timeline.freeze_playback()
         timeline.context_saved = True
         reply = timeline.heard_text()
+        if getattr(pending, 'external_event', None) is not None:
+            self.agent._SESSION_CONTEXT.add(self.context_session, context_space, '', reply,
+                                           interrupted=timeline.interrupted)
+            return
         if timeline.interrupted and self.agent.BARGE_DEBUG:
             print(f'[context] 打断于 {timeline.rendered_ms()}ms，保留回复 {reply!r}', flush=True)
         history_turn_id = self.agent._push_history(
@@ -384,6 +389,14 @@ class Conversation:
         return True
 
     async def close_session(self):
+        if getattr(self, 'closed', False):
+            return
+        self.closed = True
+        service = getattr(self.agent, 'task_scheduler', None)
+        if service is not None:
+            service.detach(self.context_session, self.task_space, self)
+            await service.save_history(self.context_session, self.task_space,
+                                       self.agent._SESSION_CONTEXT.recent(self.context_session, self.task_space, 6))
         self.prewarm['closed'] = True
         self.stop_prewarm()
         await self.drop_early()
@@ -431,9 +444,8 @@ class Conversation:
                     page_task.cancel()
 
                 await asyncio.gather(*page_tasks, return_exceptions=True)
-                await asyncio.gather(
-                    *(bridge.aclose() for bridge in bridges.values())
-                )
+                if service is None:
+                    await asyncio.gather(*(bridge.aclose() for bridge in bridges.values()))
                 bridges.clear()
 
     def reply_done(self, done_task):
@@ -519,49 +531,49 @@ class Conversation:
                 print(f'[unfinished] 用户续说，合并为 {pending.text!r}', flush=True)
         return pending
 
-    def watch_interax_pages(self, space, bridge):
-        """Keep late page results visible for the owning socket and Memory Space."""
-        if not hasattr(self, 'interax_watchers'):
-            self.interax_watchers = {}
-        if space in self.interax_watchers:
+    async def attach_tasks(self):
+        if self.interax_settings is None:
             return
+        self.interax_sessions[self.task_space] = await self.agent.task_scheduler.attach(
+            self.context_session, self.task_space, self)
+        rows = await self.agent.task_scheduler.journal.rows(
+            'SELECT payload FROM chat_history WHERE chat=? AND space=?', (self.context_session, self.task_space))
+        if rows and not self.agent._SESSION_CONTEXT.recent(self.context_session, self.task_space, 1):
+            for turn in json.loads(rows[0]['payload']):
+                self.agent._SESSION_CONTEXT.add(self.context_session, self.task_space,
+                                               turn['user_text'], turn['assistant_text'], turn['interrupted'])
 
-        previous = None
+    def ready(self):
+        task = self.turn.get('task')
+        return (not self.closed and self.agent.ACTIVE_SPACE == self.task_space
+                and not self.owner.get('input_active') and not self.hearing()
+                and (task is None or task.done())
+                and not self.unfinished_wait.get('pending'))
 
-        async def publish(state):
-            nonlocal previous
-            if self.agent.ACTIVE_SPACE == space and state != previous:
-                await self.sock.send_json({"type": "interax_state", "space": space, **state})
-                previous = state
+    async def publish(self, state):
+        if not self.closed and self.agent.ACTIVE_SPACE == self.task_space:
+            if state != getattr(self, '_task_state', None):
+                await self.sock.send_json({'type': 'interax_state', 'space': self.task_space,
+                                           'chat_id': self.context_session, **state})
+                self._task_state = state
 
-        bridge.on_delivery = publish
-
-        async def watch():
-            nonlocal previous
-            failed = False
-            while True:
-                await asyncio.sleep(2)
-                if self.agent.ACTIVE_SPACE != space or bridge.process is None:
-                    continue
-                try:
-                    state = await bridge.delivery()
-                    if self.agent.ACTIVE_SPACE != space:
-                        continue
-                    if failed:
-                        previous = None
-                    await publish(state)
-                    failed = False
-                except Exception:
-                    if not failed:
-                        await self.sock.send_json({"type": "interax_page_error", "space": space,
-                                                   "error": "页面状态查询失败，请检查 Interax 连接。"})
-                    failed = True
-                    if bridge.closed or bridge.failed:
-                        return
-
-        task = asyncio.create_task(watch())
-        self.interax_watchers[space] = task
-        task.add_done_callback(self.reply_done)
+    async def consume(self, identity, data, service):
+        if not self.ready():
+            raise asyncio.CancelledError('Conversation is busy')
+        pending = Pending('', getattr(self, 'last_memory_context', ''), None, spoken=False, transcript_managed=True,
+                          external_event=data, event_identity=identity, route=gate.SHALLOW)
+        ready = asyncio.get_running_loop().create_future()
+        ready.set_result(None)
+        await self.start_reply(pending, ready)
+        task = self.turn['task']
+        try:
+            await task
+        finally:
+            timeline = self.turn.get('timeline')
+            if timeline:
+                await service.journal.execute(
+                    "UPDATE outputs SET heard=?,delivery=? WHERE id=?",
+                    (timeline.heard_text(), 'heard' if timeline.playback_done else 'interrupted', identity))
 
     async def interax_page_action(self, data):
         """Schedule bounded page I/O without blocking microphone capture."""
@@ -570,6 +582,23 @@ class Conversation:
         action = data.get("action")
         bridge = self.interax_sessions.get(space) if isinstance(space, str) else None
         response = {"type": "interax_page_result", "space": space, "token": token, "action": action}
+        if action in {'stop_waiting', 'resume_waiting', 'retry_delivery', 'cancel'}:
+            active = getattr(self, 'interax_action_task', None)
+            if active is not None and not active.done():
+                await self.sock.send_json({**response, 'ok': False, 'error': '正在处理任务操作。'})
+                return
+            async def control():
+                try:
+                    if space != self.task_space or self.closed:
+                        raise ValueError('Conversation changed')
+                    await self.agent.task_scheduler.control(self.context_session, space, data.get('sessionId'), action)
+                    await self.sock.send_json({**response, 'ok': True})
+                    await self.agent.task_scheduler.publish(self.context_session, space)
+                except Exception:
+                    await self.sock.send_json({**response, 'ok': False, 'error': '任务操作失败，请刷新状态后重试。'})
+            self.interax_action_task = asyncio.create_task(control())
+            self.interax_action_task.add_done_callback(self.reply_done)
+            return
         task = getattr(self, 'interax_action_task', None)
         if (bridge is None or space != self.agent.ACTIVE_SPACE or not isinstance(token, str)
                 or not token or len(token) > 100 or not isinstance(action, str)
@@ -584,6 +613,9 @@ class Conversation:
             parameters["message"] = str(data.get("message") or "Page rendering failed")[:1000]
         elif action == "interact":
             parameters["data"] = data.get("data")
+            identity = data.get('actionId')
+            if isinstance(identity, str) and 1 <= len(identity) <= 100:
+                parameters['actionId'] = identity
 
         async def run():
             try:
@@ -665,6 +697,8 @@ class Conversation:
     async def start_reply(self, pending, thinking_task):
         await self.drop_early('这一轮没赌成' if self.early['task'] else '')
         await thinking_task
+        if pending.external_event is None and not pending.stranger:
+            self.last_memory_context = pending.memory_context
         reply_state = {'text': ''}
         context_space = self.agent.ACTIVE_SPACE
         memory_vm = self.agent.vm
@@ -678,40 +712,51 @@ class Conversation:
             from voicemem.reply import reply_tool_handler
 
             handler = None
-            if (
+            if pending.external_event is not None:
+                from studio.core.utils.interax.events import ExternalEvent
+                service = self.agent.task_scheduler
+                async def commit(text):
+                    await service.commit_model(pending.event_identity, self.context_session,
+                                               context_space, pending.external_event['session_id'], text)
+                    await service.journal.execute("UPDATE outputs SET delivery='attempted' WHERE id=?", (pending.event_identity,))
+                handler = ExternalEvent(pending.event_identity, pending.external_event, commit,
+                                        current=lambda: not self.closed and self.agent.ACTIVE_SPACE == context_space)
+            elif (
                 getattr(self, 'interax_settings', None) is not None
                 and not pending.stranger
                 and not pending.continuation_prompt
             ):
-                from studio.core.utils.interax.component import Interax
                 from studio.core.utils.llm.tools import ToolLoop
 
                 bridge = self.interax_sessions.get(context_space)
                 if bridge is None:
-                    bridge = Interax(self.interax_settings)
+                    bridge = await self.agent.task_scheduler.attach(self.context_session, context_space, self)
                     self.interax_sessions[context_space] = bridge
-
-                self.watch_interax_pages(context_space, bridge)
                 handler = ToolLoop(
                     bridge,
                     current=lambda: (
                         self.agent.ACTIVE_SPACE == context_space
                         and self.agent.vm is memory_vm
                     ),
+                    operation_prefix=pending.input_turn_id or uuid.uuid4().hex,
                 )
 
-            with reply_tool_handler(handler):
-                await self.agent.voicemem_llm_tts(
-                    pending,
-                    send_json,
-                    send_pcm,
-                    self.owner,
-                    timeline,
-                    said=reply_state,
-                    context_session=self.context_session,
-                    context_space=context_space,
-                    memory_vm=memory_vm,
-                )
+            async with AsyncExitStack() as stack:
+                service = getattr(self.agent, 'task_scheduler', None)
+                if pending.external_event is None and hasattr(service, 'model_slots'):
+                    await stack.enter_async_context(service.model_slots)
+                with reply_tool_handler(handler):
+                    await self.agent.voicemem_llm_tts(
+                        pending,
+                        send_json,
+                        send_pcm,
+                        self.owner,
+                        timeline,
+                        said=reply_state,
+                        context_session=self.context_session,
+                        context_space=context_space,
+                        memory_vm=memory_vm,
+                    )
         ack = self.cached_ack(pending)
         decision = self.turn_taking.decide_handoff(main_audio_ready=False, reply_mode=pending.reply_mode, cached_ack_available=bool(ack), spoken=pending.spoken)
 
@@ -742,6 +787,10 @@ class Conversation:
                     await asyncio.gather(*child_tasks, return_exceptions=True)
                 self.save_reply_context(pending, timeline, memory_vm, context_space)
                 self.turn_taking.finish_reply()
+                service = getattr(self.agent, 'task_scheduler', None)
+                if service is not None and hasattr(service, 'save_history'):
+                    await service.save_history(self.context_session, context_space,
+                                               self.agent._SESSION_CONTEXT.recent(self.context_session, context_space, 6))
         task = asyncio.create_task(coordinate_reply())
         self.turn['task'] = task
         task.add_done_callback(self.reply_done)

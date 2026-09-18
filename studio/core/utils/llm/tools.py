@@ -33,9 +33,10 @@ def encode_result(value):
 class ToolLoop:
     """Apply tools only to a confirmed foreground reply with captured ownership."""
 
-    def __init__(self, bridge, current=lambda: True):
+    def __init__(self, bridge, current=lambda: True, operation_prefix=None):
         self.bridge = bridge
         self.current = current
+        self.operation_prefix = operation_prefix
 
     def check_owner(self):
         if not self.current():
@@ -75,7 +76,8 @@ class ToolLoop:
         }}]
         request["parallel_tool_calls"] = False
         request["tool_choice"] = "auto"
-        request["messages"].append({"role": "system", "content": PROMPT + "\nSDK目录与会话数据：\n" + encode_result(description)})
+        request["messages"].append({"role": "system", "content": PROMPT})
+        request["messages"].append({"role": "assistant", "name": "task_context", "content": encode_result(description)})
         submitted = False
         created = False
         for round_index in range(8):
@@ -140,7 +142,12 @@ class ToolLoop:
                             raise ValueError("A session creation was already attempted this turn")
                         created = True
                     self.check_owner()
-                    result = await self.bridge.execute(method, parameters)
+                    if self.operation_prefix is not None:
+                        import hashlib
+                        identity = hashlib.sha256(f'{self.operation_prefix}:{round_index}'.encode()).hexdigest()
+                        result = await self.bridge.execute(method, parameters, operation_id=identity)
+                    else:
+                        result = await self.bridge.execute(method, parameters)
                 except BridgeError as error:
                     result = {"error": error.detail}
                 except (ValueError, TypeError) as error:

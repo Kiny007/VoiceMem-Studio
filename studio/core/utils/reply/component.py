@@ -33,6 +33,8 @@ class Reply:
         return SequenceMatcher(None, early, final, autojunk=False).ratio() >= 0.82
 
     async def _send_reply_display(self, pending, send, ready, output_id, space, memory_vm):
+        if getattr(pending, "external_event", None) is not None:
+            return
         await ready.wait()
         if self.ACTIVE_SPACE != space or self.vm is not memory_vm:
             return
@@ -112,6 +114,7 @@ class Reply:
             self._note_replay(pending.replay)
             await send({"type": "play_memory", "memory_id": pending.replay})
         await send({"type": "answer_start", "output_id": timeline.output_id,
+                    "event_id": getattr(pending, "event_identity", ""),
                     "sample_rate": timeline.sample_rate})
 
         _t0 = time.monotonic()

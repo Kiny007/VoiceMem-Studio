@@ -1,7 +1,7 @@
 /* Same-origin Studio transport. Each page owns one cancellable conversation. */
 (() => {
   'use strict';
-  const STUDIO_BASE = new URL('../', document.currentScript.src);
+  const STUDIO_BASE = new URL('../', document.currentScript?.src || new URL('studio-client.js', location.href).href);
   const studioURL = path => new URL(path, STUDIO_BASE);
   const RATE = 24000;
   const MAX_REPLAY_RECORDS = 32;
@@ -17,7 +17,48 @@
     }
     return output;
   }
-  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {} } = {}) {
+  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {}, getConversation = () => null, onInteraxChanged = () => {} } = {}) {
+    let pages = null, pagesLoading = null;
+    const sessionFor = owner => {
+      const conversation = owner.conversation;
+      conversation.ui ||= {};
+      return conversation;
+    };
+    async function taskEvent(owner, message) {
+      pagesLoading ||= import('/interax-pages.js').then(({ InteraxPages }) => pages = new InteraxPages({
+        send(session, data) {
+          if (!active(run) || session.interaxSocket !== run.socket || session !== run.conversation) return false;
+          sendJSON(run, data); return true;
+        },
+        isCurrent: session => active(run) && session === run.conversation && session.interaxSocket === run.socket,
+        notify: text => VMUI.notify(text),
+        changed: session => onInteraxChanged(session, !session.ui.interaxDisconnected),
+      }));
+      await pagesLoading;
+      if (!active(owner)) return;
+      const session = sessionFor(owner);
+      session.space = message.space;
+      owner.socket.interaxOwners ||= new Map();
+      owner.socket.interaxOwners.set(message.space, session);
+      if (message.type === 'interax_state') {
+        pages.receive(message.space, message, owner.socket);
+        for (const output of [...(message.outputs || [])].reverse()) {
+          if (!(session.messages || []).some(item => item.eventId === output.id))
+            emit(owner, { type: 'task_answer', event_id: output.id, text: output.text, heard: output.heard });
+        }
+      }
+      else if (message.type === 'interax_page_result') {
+        if (!message.ok && ['cancel','stop_waiting','resume_waiting','retry_delivery'].includes(message.action)) VMUI.notify(typeof message.error === 'string' ? message.error : '任务操作失败');
+        else await pages.result(message);
+      }
+      else if (message.type === 'interax_page_error') VMUI.notify(message.error);
+    }
+    function renderInterax(conversation, host) {
+      if (!pages || !conversation?.ui) return false;
+      const count = host.children.length;
+      pages.cards(conversation, host);
+      return host.children.length > count;
+    }
     let run = null;
     let replayRun = null;
     let replaySamples = 0;
@@ -156,6 +197,7 @@
       if (!owner) return;
       if (recordings.get(owner.output)?.state === 'recording') deleteRecording(owner.output);
       stopMic(owner);
+      pages?.disconnect(owner.socket);
       owner.closed = true;
       run = null;
       clearTimeout(owner.timeout);
@@ -210,6 +252,10 @@
     }
     function handle(owner, message) {
       if (!active(owner)) return;
+      if (message.type.startsWith('interax_')) {
+        void taskEvent(owner, message).catch(error => { if (active(owner)) VMUI.notify(error.message); });
+        return;
+      }
       if (message.output_id && message.type !== 'answer_start' && message.output_id !== owner.output) return;
       switch (message.type) {
         case 'session_ready':
@@ -285,6 +331,7 @@
           }
         };
         const url = studioURL('ws');
+        url.searchParams.set('chat_id', owner.conversation.runtimeId);
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
         const socket = owner.socket = new WebSocket(url.href); socket.binaryType = 'arraybuffer';
         socket.onmessage = event => {
@@ -316,7 +363,13 @@
     }
     function connect() {
       if (run) return run.ready;
-      const owner = run = { closed: false, clips: new Set(), rate: RATE, output: '' };
+      const conversation = getConversation() || { id: 'default' };
+      if (!conversation.runtimeId) {
+        const storageKey = 'studio.task-owner.' + conversation.id;
+        try { conversation.runtimeId = localStorage.getItem(storageKey) || crypto.randomUUID(); localStorage.setItem(storageKey, conversation.runtimeId); }
+        catch { conversation.runtimeId = crypto.randomUUID(); }
+      }
+      const owner = run = { closed: false, clips: new Set(), rate: RATE, output: '', conversation };
       owner.ready = new Promise((resolve, reject) => { owner.resolve = resolve; owner.reject = reject; });
       // A handler is attached immediately so cancellation never leaves an unhandled rejection.
       owner.ready.catch(() => {});
@@ -375,7 +428,8 @@
         .then(response => { if (!response.ok) throw new Error('语言切换失败'); })
         .catch(error => VMUI.notify(error.message));
     });
-    return { send, start, toggle, replay, stopReplay, cancel: end, stop: end };
+    if (getConversation()?.runtimeId) Promise.resolve().then(() => connect()).catch(error => VMUI.notify(error.message));
+    return { send, start, toggle, replay, stopReplay, renderInterax, reconnect: connect, cancel: end, stop: end };
   }
   function applyUser(messages, event, role) {
     const id = event.input_turn_id;
@@ -392,5 +446,15 @@
   function acceptsPartial(messages, event) {
     return !event.input_turn_id || !messages.some(message => message.inputIds?.includes(event.input_turn_id));
   }
-  window.VMStudio = { create, applyUser, acceptsPartial };
+  function restoreChats(key, fallback) {
+    try {
+      const saved = JSON.parse(localStorage.getItem('studio.chats.' + key));
+      if (Array.isArray(saved) && saved.length && saved.every(c => typeof c.id === 'string' && Array.isArray(c.messages))) return saved;
+    } catch {}
+    return fallback;
+  }
+  function saveChats(key, chats) {
+    try { localStorage.setItem('studio.chats.' + key, JSON.stringify(chats.slice(0, 32).map(c => ({id:c.id, runtimeId:c.runtimeId, title:c.title, pinned:c.pinned, messages:c.messages.slice(-100)})))); } catch {}
+  }
+  window.VMStudio = { create, applyUser, acceptsPartial, restoreChats, saveChats };
 })();

@@ -107,7 +107,8 @@ await fixture(async (bridge, server) => {
   await bridge.execute("createSession", {});
   server.retrySubmit();
   const output = await bridge.execute("submit", { text: "Draw the fixture", skills: ["future-skill"], effort: "high" });
-  assert.equal(output.progress.stage, "completed");
+  assert.equal(output.submission.id, "request_one");
+  output.results = (await bridge.execute("request.results", {})).value;
   assert.equal(output.results.length, 1, "request.results must exclude another request's output");
   assert.equal(output.results[0].narration, "Actual narration");
   assert.equal(output.results[0].display, "not_displayed");
@@ -130,8 +131,9 @@ for (const stage of ["waiting", "failed", "rejected", "cancelled", "running"]) {
     server.setStage(stage);
     await bridge.execute("createSession", {});
     const result = await bridge.execute("submit", { text: "fixture" });
-    assert.equal(result.progress.stage, stage);
-    if (stage === "running") assert.equal(result.waitTimedOut, true);
+    assert.equal(result.submission.id, "request_one");
+    assert.equal((await bridge.delivery()).tasks[0].stage, stage);
+    assert(!server.calls.some(call => call.relative.includes("/requests/")));
   });
 }
 await fixture(async (bridge, server) => {
@@ -139,7 +141,7 @@ await fixture(async (bridge, server) => {
   await bridge.execute("createSession", {});
   const result = await bridge.execute("submit", { text: "fixture control" });
   assert.equal(result.submission.id, null);
-  assert(result.snapshot);
+  assert.equal(result.snapshot, undefined);
   assert(!server.calls.some((call) => call.relative.includes("/requests/")));
 });
 await fixture(async (bridge, server) => {
@@ -147,13 +149,13 @@ await fixture(async (bridge, server) => {
   server.failReads();
   const result = await bridge.execute("submit", { text: "fixture" });
   assert.equal(result.submission.id, "request_one");
-  assert.equal(result.readError.status, 422, "read failure must not erase accepted submission");
+  assert.equal(result.readError, undefined, "Submission acknowledgement does not wait for reads");
 });
 await fixture(async (bridge, server) => {
   await bridge.execute("createSession", {});
   server.setStage("running");
   const pending = await bridge.execute("submit", { text: "Create an interactive binary search page" });
-  assert.equal(pending.waitTimedOut, true);
+  assert.equal(pending.submission.id, "request_one");
   assert.deepEqual(await bridge.pages(), []);
   server.publishPage();
   const pages = await bridge.pages();
@@ -199,13 +201,13 @@ await fixture(async (bridge, server, { updates, notified }) => {
   let finished = false;
   const submit = bridge.execute('submit', { text: 'Make a page' }).then(result => { finished = true; return result; });
   await notified;
-  assert.equal(finished, false, 'Acknowledgement is published while the foreground wait is still pending');
+  assert(updates.length, 'Acknowledgement is published independently of polling');
   assert.equal(updates[0].tasks[0].stage, 'accepted');
   assert.equal(updates[0].tasks[0].title, 'Make a page');
   assert.deepEqual(updates[0].pages, []);
   release();
   await submit;
-  assert.equal(updates.at(-1).tasks[0].stage, 'completed');
+  assert.equal((await bridge.delivery()).tasks[0].stage, 'completed');
 });
 await fixture(async (bridge, server) => {
   await bridge.execute('createSession', {});

@@ -1,4 +1,4 @@
-"""Conversation-owned, asynchronous IPC to the official SDK in a Node process."""
+"""Service-owned, asynchronous IPC to the official SDK in a Node process."""
 import asyncio
 import json
 import os
@@ -17,7 +17,7 @@ class BridgeError(RuntimeError):
 
 
 class Interax:
-    """Own SDK handles for one WebSocket conversation and one Memory Space."""
+    """Own SDK handles for one durable frontend chat and one Memory Space."""
 
     def __init__(self, settings):
         self.settings = settings

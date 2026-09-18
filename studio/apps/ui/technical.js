@@ -17,8 +17,8 @@ const DOMAINS = {
 };
 
 const MEMORIES = {facts: [], traits: []};
-const CONVERSATIONS = [{id:'c1',title:'New conversation',messages:[]}];
-let activeConv = 'c1', activeDomain = null, replyMessage = null;
+const CONVERSATIONS = VMStudio.restoreChats('technical', [{id:crypto.randomUUID(),title:'New conversation',messages:[]}]);
+let activeConv = CONVERSATIONS[0].id, activeDomain = null, replyMessage = null;
 let perception = {};
 
 /* ---------- rendering ---------- */
@@ -96,6 +96,7 @@ function messageNode(m) {
 }
 
 function renderThread() {
+  VMStudio.saveChats('technical', CONVERSATIONS);
   const conv = CONVERSATIONS.find(c => c.id === activeConv);
   const t = $('thread');
   t.innerHTML = '';
@@ -151,7 +152,7 @@ function renderConvList() {
     select.title = c.title;
     select.setAttribute('aria-current', c.id === activeConv ? 'true' : 'false');
     select.innerHTML = `<span class="conv-title">${esc(c.title)}</span><span class="dot"></span>`;
-    select.onclick = () => { voice.cancel(); activeConv = c.id; syncConversation(); };
+    select.onclick = () => { voice.cancel(); activeConv = c.id; syncConversation(); if(c.runtimeId) void voice.reconnect().catch(e=>VMUI.notify(e.message)); };
     const pin = document.createElement('button');
     pin.className = 'pin-conv';
     pin.title = c.pinned ? '取消置顶' : '置顶对话';
@@ -197,6 +198,10 @@ function now() {
 
 function handleStudio(message) {
   const conv = CONVERSATIONS.find(c => c.id === activeConv);
+  if (message.type === 'task_answer') {
+    if (!conv.messages.some(m => m.eventId === message.event_id)) conv.messages.push({role:'ai', text:message.text, eventId:message.event_id, time:now()});
+    renderThread(); return;
+  }
   if (message.type === 'partial_transcript') {
     if (!VMStudio.acceptsPartial(conv.messages, message)) return;
     $('liveEcho').textContent = message.text; $('liveEcho').classList.remove('empty');
@@ -209,6 +214,7 @@ function handleStudio(message) {
   } else if (message.type === 'answer_start') {
     conv.busy = true;
     replyMessage = {role:'ai',text:'',time:now(),outputId:message.output_id};
+    replyMessage.eventId = message.event_id || '';
     conv.messages.push(replyMessage); $('aiEcho').textContent = ''; renderThread();
   } else if (message.type === 'answer_delta' && replyMessage) {
     replyMessage.text += message.text || ''; $('aiEcho').textContent = replyMessage.text;

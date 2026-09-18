@@ -89,11 +89,11 @@ test('current UI receives task cards and completes acquire, render, confirmation
   socket.receive({type:'interax_state',space:'space_a',tasks:[task],pages:[],errors:[]}); await tick();
   const host = new Element();
   assert.equal(f.client.renderInterax(f.conversation, host), true);
-  assert.equal(buttons(host).length, 0);
+  assert.equal(buttons(host).filter(b => b.textContent === '打开交互页面').length, 0);
   socket.receive({type:'interax_state',space:'space_a',tasks:[{...task,stage:'completed'}],pages:[page],errors:[]}); await tick();
   host.replaceChildren(); f.client.renderInterax(f.conversation, host);
-  assert.equal(buttons(host)[0].textContent, '打开交互页面');
-  buttons(host)[0].onclick(); const selection = socket.sent.at(-1);
+  assert.equal(buttons(host).find(b => b.textContent === '打开交互页面').textContent, '打开交互页面');
+  buttons(host).find(b => b.textContent === '打开交互页面').onclick(); const selection = socket.sent.at(-1);
   assert.equal(selection.type, 'interax_page_action'); assert.equal(selection.action, 'openPage');
   assert.equal(selection.space, 'space_a');
   socket.receive({type:'interax_page_result',space:'space_a',token:selection.token,action:'openPage',ok:true,
@@ -107,7 +107,7 @@ test('current UI receives task cards and completes acquire, render, confirmation
   assert.equal(f.events.some(event => event.type.startsWith('interax_')), false);
   assert.equal(f.changes.at(-1).owner, f.conversation); assert.equal(f.changes.at(-1).reveal, true);
   f.client.cancel(); host.replaceChildren(); f.client.renderInterax(f.conversation, host);
-  assert.equal(buttons(host)[0].disabled, true); assert.equal(f.body.children[0].open, false);
+  assert.equal(buttons(host).find(b => b.textContent === '打开交互页面').disabled, true); assert.equal(f.body.children[0].open, false);
   assert.equal(f.changes.at(-1).reveal, false);
 });
 

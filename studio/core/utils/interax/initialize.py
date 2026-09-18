@@ -13,6 +13,11 @@ from studio.paths import ROOT
 class Settings:
     base_url: str
     root: Path
+    state_path: Path = ROOT / "results" / "task-orchestration.sqlite"
+    max_sessions: int = 8
+    max_owners: int = 32
+    max_polls: int = 4
+    max_models: int = 2
 
 
 def configuration():
@@ -26,7 +31,12 @@ def configuration():
         raise ValueError("STUDIO_INTERAX_BASE_URL must be an HTTP(S) service or proxy URL without credentials, query or fragment")
     url.port
     root = Path(os.environ.get("STUDIO_INTERAX_ROOT") or ROOT.parent / "Interax").expanduser().resolve()
-    return Settings(base_url, root)
+    limits = {name: int(os.environ.get("STUDIO_INTERAX_" + name.upper(), default))
+              for name, default in {"max_sessions": 8, "max_owners": 32, "max_polls": 4, "max_models": 2}.items()}
+    if any(not 1 <= value <= 128 for value in limits.values()):
+        raise ValueError("Interax resource limits must be 1..128")
+    return Settings(base_url, root, Path(os.environ.get("STUDIO_INTERAX_STATE_PATH") or
+                                       ROOT / "results" / "task-orchestration.sqlite"), **limits)
 
 
 def check(settings, *, mode, provider):

@@ -117,8 +117,22 @@ export class InteraxPages {
       if (task.stage === 'completed' && !results.length) status.textContent += '，暂无可打开的交互页面。';
       if (task.failedResults) status.textContent += ' 部分成果生成失败。';
       if (errors.some((error) => error.sessionId === task.sessionId)) status.textContent += ' 状态查询失败，正在重连；以上为上次获取的状态。';
-      if (session.ui.interaxDisconnected) status.textContent += ' 连接已结束，状态更新已停止；后端任务可能仍在执行。';
+      if (session.ui.interaxDisconnected) status.textContent += ' 连接已断开；服务端继续跟踪任务，重新连接可恢复。';
       card.append(title, status);
+      const controls = document.createElement('span');
+      for (const [action, label] of [[task.waitingStopped ? 'resume_waiting' : 'stop_waiting', task.waitingStopped ? '恢复通知' : '停止等待'], ['cancel', '取消任务']]) {
+        const control = document.createElement('button');
+        control.type = 'button'; control.textContent = label;
+        control.disabled = Boolean(session.ui.interaxDisconnected);
+        control.onclick = () => this.send(session, {type:'interax_page_action', space:session.space, sessionId:task.sessionId, token:crypto.randomUUID(), action});
+        controls.append(control);
+      }
+      if (errors.some(error => error.sessionId === task.sessionId && error.code === 'model_retry_exhausted')) {
+        const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试结果通知';
+        retry.onclick = () => this.send(session, {type:'interax_page_action',space:session.space,sessionId:task.sessionId,token:crypto.randomUUID(),action:'retry_delivery'});
+        controls.append(retry);
+      }
+      card.append(controls);
       for (const question of task.questions || []) {
         const prompt = document.createElement('p');
         prompt.textContent = `${question.required ? '需要回答：' : '问题：'}${question.text}`;
@@ -146,7 +160,7 @@ export class InteraxPages {
     this.title.textContent = page.title || 'Interax 交互页面';
     this.status.textContent = '正在加载页面…';
     this.dialog.showModal();
-    if (!this.action(active, 'openPage', { page })) this.status.textContent = '连接已结束，请在当前对话中重新生成页面。';
+    if (!this.action(active, 'openPage', { page })) this.status.textContent = '连接已结束，请重新连接当前对话后打开已有成果。';
   }
 
   async result(message) {
@@ -170,7 +184,7 @@ export class InteraxPages {
         active.controller.signal.throwIfAborted();
         const render = createIframeRenderer(this.canvas, { onInteraction: (data) => {
           if (!active.confirmed) return;
-          if (this.action(active, 'interact', { data })) {
+          if (this.action(active, 'interact', { data, actionId: crypto.randomUUID() })) {
             active.confirmed = false;
             this.status.textContent = '正在提交页面操作…';
           }

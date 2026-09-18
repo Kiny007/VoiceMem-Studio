@@ -8,7 +8,7 @@ const $ = id => document.getElementById(id);
 const tr=text=>window.VMSettings?.t(text)||text;
 const el = (t,c,x) => { const n=document.createElement(t); if(c)n.className=c; if(x!=null)n.textContent=x; return n; };
 
-const conversations = [{id:'c1',title:'新对话',pinned:false,messages:[]}];
+const conversations = VMStudio.restoreChats('digital', [{id:crypto.randomUUID(),title:'新对话',pinned:false,messages:[]}]);
 let current = conversations[0], replyMessage = null;
 const state = {get messages(){return current.messages;},busy:false,listening:false,memory:false};
 let toastTimer, typeTimer, markTimer;
@@ -31,6 +31,7 @@ function renderRail(){
 function selectConversation(c){
   voiceInput.cancel();clearTimeout(typeTimer);clearTimeout(markTimer);
   document.body.classList.remove('talking');current=c;state.busy=!!c.busy;
+  if(c.runtimeId) void voiceInput.reconnect().catch(e=>VMUI.notify(e.message));
   const me=[...c.messages].reverse().find(m=>m.role==='me');
   const her=[...c.messages].reverse().find(m=>m.role==='her');
   $('said').textContent=me?.text||tr('说点什么，她在听。');$('said').classList.add('on');
@@ -100,6 +101,10 @@ function speak(text){
 }
 
 function handleStudio(message) {
+  if (message.type === 'task_answer') {
+    if (!current.messages.some(m => m.eventId === message.event_id)) current.messages.push({role:'her',text:message.text,eventId:message.event_id});
+    renderLog(); return;
+  }
   if (message.type === 'partial_transcript') {
     if (!VMStudio.acceptsPartial(current.messages, message)) return;
     $('said').textContent = message.text; $('said').classList.add('on');
@@ -111,7 +116,7 @@ function handleStudio(message) {
     renderRail(); renderLog();
   } else if (message.type === 'answer_start') {
     clearTimeout(typeTimer); current.busy = state.busy = true;
-    replyMessage = {role:'her',text:'',outputId:message.output_id}; current.messages.push(replyMessage);
+    replyMessage = {role:'her',text:'',outputId:message.output_id,eventId:message.event_id || ''}; current.messages.push(replyMessage);
     $('voice').textContent = ''; renderLog(); syncSend();
   } else if (message.type === 'answer_delta' && replyMessage) {
     replyMessage.text += message.text || ''; $('voice').textContent = replyMessage.text; renderLog();

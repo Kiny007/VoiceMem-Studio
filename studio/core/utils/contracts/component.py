@@ -29,6 +29,8 @@ class Pending:
     input_turn_id: str = ""
     replace_input_turn_id: str = ""
     transcript_managed: bool = False
+    external_event: dict | None = None
+    event_identity: str = ""
 
 
 def input_transcript_event(pending) -> dict:

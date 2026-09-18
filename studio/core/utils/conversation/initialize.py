@@ -17,7 +17,11 @@ def initialize(self, agent, sock):
     self.turn['generation_task'] = None
     self.owner = {'id': '', 'last': '', 'miss': 0}
     self.speech_rate = SpeechRateEstimator()
-    self.context_session = uuid.uuid4().hex
+    import re
+    chat = getattr(sock, 'query_params', {}).get('chat_id', '')
+    self.context_session = chat if isinstance(chat, str) and re.fullmatch(r'[a-zA-Z0-9_-]{16,96}', chat) else uuid.uuid4().hex
+    self.task_space = agent.ACTIVE_SPACE
+    self.closed = False
     self.candidate_paused = False
     self.candidate_paused_at = 0.0
     self.filler_waiters: dict[str, asyncio.Event] = {}

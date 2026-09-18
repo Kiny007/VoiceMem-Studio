@@ -103,7 +103,7 @@ const task = { sessionId: page.sessionId, requestId: 'request_one', title: '<b>M
 const ownedPage = { ...page, requestId: task.requestId };
 const taskSocket = { interaxOwners: new Map([['space_a', session]]) };
 const texts = element => [element.textContent, ...element.children.flatMap(texts)].join(' ');
-const buttons = element => element.children.flatMap(child => child.type === 'button' ? [child] : buttons(child));
+const buttons = element => element.children.flatMap(child => child.type === 'button' ? (child.textContent === '打开交互页面' ? [child] : []) : buttons(child));
 ui.receive('space_a', { tasks: [task], pages: [], errors: [] }, taskSocket);
 cards.replaceChildren(); ui.cards(session, cards);
 assert.equal(cards.children.length, 1, 'An accepted task has a card before any page exists');
@@ -133,7 +133,7 @@ assert(texts(cards).includes('状态查询失败'));
 assert.equal(buttons(cards).length, 1, 'Read failures retain the existing page entry');
 ui.disconnect(taskSocket);
 cards.replaceChildren(); ui.cards(session, cards);
-assert(texts(cards).includes('状态更新已停止'));
+assert(texts(cards).includes('服务端继续跟踪任务'));
 assert.equal(buttons(cards)[0].disabled, true);
 
 // Check both shipped frontends; transport behavior is covered by ui-client.test.cjs.

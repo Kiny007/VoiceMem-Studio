@@ -77,61 +77,84 @@ package does not import Studio or Interax. The loop combines the existing
 persona/history/memory request with live Skill metadata and upstream SDK method
 descriptions. SDK results return as tool messages to the same reply model.
 
-Each WebSocket Conversation owns an Interax Node bridge per Memory Space.
-The bridge imports the official SDK and Demo wrappers from a configured source
-tree and uses local IPC with Python; it implements no backend HTTP protocol.
-The foreground turn captures its Memory Space and VoiceMem instance. Stale
-model/tool results cannot execute subsequent operations or enter TTS.
-Cancelled IPC callers leave one owned response-draining task; later calls wait
-for it, and disconnect reaps it and the Node process. Stopping a local wait or
-disconnecting does not cancel or delete the remote Session. Backend cancellation
-requires the explicit SDK action. An unknown IPC outcome is never automatically
-resubmitted. A failed bridge stays closed for its Conversation/space.
+The Studio process owns `Scheduler` in `studio/core/utils/interax/scheduler.py`.
+It is part of the frontend application orchestration plane, physically deployed
+on the Studio server. SQLite owns chat/Memory Space/Interax Session associations,
+fetch cursors, the model inbox, scheduling parameters, operation receipts,
+versioned task summaries, generated notifications and confirmed heard prefixes.
+Blocking persistence runs off the audio event loop. Backend execution and its
+transactional event log remain owned by Interax `SessionService`.
 
-Enabling `STUDIO_INTERAX_BASE_URL` requires Node >=22.12, the upstream sources
-(`STUDIO_INTERAX_ROOT`, default sibling checkout), and a DeepSeek/Qwen/OpenAI
-`llm_tts` provider. Early speculative replies are disabled for enabled
-conversations; filler, continuation-follow-up and stranger replies have no tool
-handler. Tool-enabled rounds buffer text until the model's tool/text decision is
-complete; only final text reaches the existing speech pipeline. Ordinary
-disabled-mode streaming and memory behavior retain their existing contracts.
-This mode retrieves actual text, questions, page catalogs and results. Each
-Conversation owns a delivery watcher per bridge, polling all bridge-owned
-Interax Sessions in the active Memory Space every two seconds through serialized
-IPC. Submission acknowledgements also emit delivery notifications on that IPC
-stream before the foreground wait completes; the reader distinguishes these
-notifications from command responses, including while draining cancelled calls.
-Task stages, waiting questions, result failures, query errors and page catalogs
-reach the browser independently of the spoken reply. Query failures retain the
-last known state for the affected Session; successful reads clear the error.
-Disconnect cancels these
-watchers and the bounded page-action task before closing bridges. Page actions
-are scheduled outside the capture receive loop so SDK latency cannot block audio.
+`poll_interval` controls reads; `wake_at`/`delay` controls a one-shot scheduled
+check; `delivery_policy` controls model delivery (ready/completed/at_wake).
+Required questions bypass delayed completion notification. A wake reports the
+actual status even when work is unfinished. Normal progress is recorded without
+calling the model. Online results use the short configured polling interval;
+terminal sessions use at least 30 seconds unless a user operation or reconnect
+requests an immediate refresh. Poll workers and model calls have independent,
+configurable admission limits; one slow backend read does not stop other timers.
 
-Both shipped interfaces (`studio/apps/ui/technical.js` and `digital.js`) use
-`studio-client.js` to dispatch Interax WebSocket events to the shared
-`studio/web/interax-pages.js` component. The client captures the browser chat
-when connecting and routes page actions through that same live socket. Async
-component loads and callbacks from closed sockets cannot update a new chat.
-Task updates reveal the conversation panel in either style; rendering chat text
-also renders its task cards. The main Studio UI shows a task card as soon as Interax acknowledges a Request,
-then adds page buttons when results become displayable. Task ownership is bound
-to the browser chat by Memory Space, Interax Session and Request; later updates
-retain that owner when another chat is created. Results from earlier Sessions
-remain accessible without changing the model's selected Session. Opening a card uses the bound Result's
-`prepare({mode: "display"})`; only this selection downloads the HTML. Studio
-serves the upstream `browser.js` renderer and its viewport helper verbatim via
-two allowlisted assets. The renderer owns sandbox isolation, source-checked
-postMessage interactions and load/font/paint readiness. Its completion triggers
-`Presentation.confirmDisplayed()` through Studio's WebSocket and Node bridge;
-render failure uses `reportFailure()`. GUI data uses `Session.submitInteraction()`
-after display confirmation. Selection tokens, session/revision checks and socket/
-space ownership reject stale callbacks. Revisions replace page cards; users open
-the new version explicitly. Disconnect marks cards as no longer updating and
-disables their page buttons. Session bindings remain connection-scoped; reconnect
-does not restore previous backend tasks. HTML bypasses model context and TTS. The browser
-remains a client of Studio only. No Interax Player or playback receipts are
-implemented. Deployment and offline regressions are in `docs/interax.md`.
+Each service-owned Node bridge uses the official SDK and upstream operation
+catalog. The process restores only persisted owned Session IDs. Submissions
+return acknowledgements immediately, with durable command IDs for retries.
+Unknown GUI outcomes remain explicit and are not automatically resubmitted.
+A Session can accept sequential related Requests; Interax cancels and joins an
+old execution before starting its replacement. Independent goals use separate
+Sessions, and backend queue capacity limits pending jobs.
+
+SDK `getUpdates` exposes bounded event pages with stable IDs and ordered sequence
+numbers. The frontend durably queues events before advancing the fetch cursor;
+model consumption has its own queued/consuming/consumed/blocked lifecycle.
+Snapshots newer than the fetched page wait until intervening pages are stored.
+Repeated fetches deduplicate by Session and event ID. Cursor conflicts restart
+history reads from zero without recreating a Session. A missing Session produces
+an error rather than silently re-executing the user's task.
+
+`Conversation` is a replaceable subscriber, not the owner of timers or bridges.
+While connected and idle, it consumes external events through the actual
+`voicemem_llm_tts` and provider handler entry. User speech, generation, candidate
+pauses and unfinished speech defer delivery. Existing TTS and heard-prefix
+finalization remain authoritative. A disconnected or inactive chat retains its
+inbox; model delivery resumes on attachment. No closed Conversation is used as a
+background execution owner. Server restart restores the journal, and Interax's
+existing recovery marks interrupted executions without replaying tool effects.
+
+An active foreground tool loop keeps real tool-call IDs. After that turn, a
+notification uses a named assistant data envelope plus a fixed application
+instruction, without a fabricated user message or an obsolete tool response.
+Backend data never enters a system instruction. Automatic notification rounds
+have no tools; follow-up user answers use the normal tool loop. Completed model
+text is committed before TTS, so retries cannot replay tools or automatically
+repeat an uncertain spoken notification. Generated output remains available in
+the UI when playback was interrupted. Only its confirmed heard prefix enters
+Session Context; external task data never enters personal-memory ingestion.
+
+Task context uses a deterministic structured summary (version and covered event
+cursor), up to eight recent Requests, twelve current result references and six
+recent event descriptions, bounded to 12,000 characters at external injection.
+Full task events remain in the journal and Interax history. Normal dialogue keeps
+the existing SessionBuffer limit and persists six recent turns for reconnection.
+Quick operations have a separate simple method path (`quick.time` as the initial
+capability), without a backend task or a task history.
+
+Both actual interfaces (`technical.html` and `digital.html`) use
+`studio-client.js` and `studio/web/interax-pages.js`. Stable random chat IDs and
+bounded browser chat records support refresh and chat switching. Status and
+result cards update independently of narration. Browser selection calls
+`Result.prepare({mode: "display"})`; only then is HTML downloaded. The upstream
+sandbox renderer waits for load/font/paint readiness before `confirmDisplayed`.
+Failure, stale versions, GUI source checks and connection warnings remain active.
+GUI operations carry a separate deduplication identity. Studio WebSocket messages
+are frontend-internal transport; Interax never pushes model or display commands.
+
+Enabling `STUDIO_INTERAX_BASE_URL` requires Node >=22.12 and a supported remote
+DeepSeek/Qwen/OpenAI `llm_tts` provider. Early speculative replies remain disabled
+for tool-enabled conversations. These APIs expose no explicit KV handles; task
+state always comes from SQLite. The optional local MLX path remains unsupported
+for SDK tools, with explicit configuration rejection. Its existing model cache
+continues to validate exact token prefixes and use `GpuLoop`; no competing GPU
+thread or cache owner is introduced. See `docs/task-orchestration.md` for limits,
+lifecycle transitions, verification and extension boundaries.
 
 The local Qwen3-0.6B classifier selects ordinary or deep reasoning after ASR.
 Studio combines that depth with VoiceMem memory eligibility into the existing
@@ -243,9 +266,8 @@ reported as rendered by the playback worklet. Replays do not emit playback
 checkpoints and the cache is discarded on page refresh. UI replies and
 perception come from backend events. Confirmed input IDs deduplicate transcripts
 and merge continuations; interruption uses the backend's heard prefix. Changing
-style, conversation, language, or leaving the page closes its connection. Chat
-lists are page-local and reset on refresh; opening a previous list item starts a
-new backend context for subsequent input. The supplied brain illustration is a
+style, conversation, language, or leaving the page closes its connection. Bounded chat lists survive refresh; reopening a saved chat restores its stable
+identity and associated task state. The supplied brain illustration is a
 memory-domain navigation diagram, not a count or topology of stored memories.
 The panels show real per-turn recall results without demo records or rule replies. A local
 configuration page owns the restricted settings IPC; the Studio renderer has no

@@ -104,6 +104,7 @@ class Capture:
                         on_filler_done(str(data.get("filler_id") or ""))
                     continue
                 if data.get("type") == "user_text" and data.get("text", "").strip():
+                    owner["input_active"] = True
                     turn_taking.begin_user_turn()
                     stream.emotion = owner.get('emotion')
                     turn = await stream.feed_text(data["text"])
@@ -114,6 +115,7 @@ class Capture:
                                   route=turn.route,
                                   reply_mode=MEMORY if gate.needs_memory(turn.route) else DIRECT,
                                   input_turn_id=uuid4().hex)
+                    owner["input_active"] = False
                     input_turn_id = uuid4().hex
                 continue
             if msg.get("bytes") is None:
@@ -143,6 +145,7 @@ class Capture:
                 snapshot = st
                 emotion_task = asyncio.create_task(
                     asyncio.to_thread(lambda: snapshot.emotion))
+            owner["input_active"] = bool(st.spoke or st.state == "<speak>" or st.turn)
             turn_finished = bool(st.turn)
             utterance.observe(active=st.spoke or bool(st.turn) or st.state == "<speak>",
                               busy=busy_at_capture, reference=reference_at_capture)
@@ -481,6 +484,8 @@ class Capture:
         try:
             async for pending in self.anticipate(sock, **kwargs):
                 yield pending
+                if kwargs.get("owner") is not None:
+                    kwargs["owner"]["input_active"] = False
         finally:
             if on_close:
                 await on_close()

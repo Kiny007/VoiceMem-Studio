@@ -66,6 +66,25 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
     return prepared.presentation;
   };
   return {
+    async restore(ids) {
+      for (const id of ids) client.openSession(id);
+      context.session = ids.length ? client.openSession(ids.at(-1)) : null;
+      return true;
+    },
+    async updates(sessionId, after, limit) {
+      const session = client.sessions.get(sessionId);
+      if (!session) throw new Error('Unknown owned Session');
+      let batch, reset = false;
+      try { batch = await session.getUpdates({ after, limit }); }
+      catch (error) {
+        if (error.status !== 409) throw error;
+        reset = true;
+        batch = await session.getUpdates({ after: 0, limit });
+      }
+      const snapshot = await session.poll();
+      remember(snapshot);
+      return { ...batch, snapshot, reset };
+    },
     async describe() {
       skills = await client.listSkills();
       return { catalog: catalog.map(({ key, help, example }) => ({ key, help, example })), skills,
@@ -74,6 +93,10 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
     async execute(method, parameters = {}) {
       if (!allowed.has(method)) throw new Error("SDK method is not enabled");
       if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw new Error("parameters must be an object");
+      if (parameters.sessionId && method !== 'createSession') {
+        await context.select(parameters.sessionId);
+        parameters = { ...parameters }; delete parameters.sessionId;
+      }
       if (method === "submit") {
         if (parameters.interaction !== undefined) throw new Error("Page interactions require a renderer");
         if (parameters.skills !== undefined && (!Array.isArray(parameters.skills) || parameters.skills.some((name) => !skills.some((skill) => skill.name === name)))) throw new Error("Choose skills from listSkills");
@@ -83,31 +106,18 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
       }
       if (!["listSkills", "poll", "getHistory", "getPages", "getPage", "getView",
         "request.progress", "request.wait", "request.results", "result.refresh"].includes(method)) prepared = null;
-      const value = await controller.execute(method, parameters);
+      let value;
+      if (method === 'createSession' && parameters.sessionId) {
+        context.session = await client.createSession(parameters);
+        context.request = context.result = context.question = null;
+        value = { id: context.session.id };
+      } else value = await controller.execute(method, parameters);
       if (method !== "submit") return { value, ...scope() };
-      // Publish acknowledgement before the bounded wait occupies the IPC channel.
+      // Waiting and result delivery belong to the service scheduler.
       accepted(context.session, value, parameters.text);
       // Acknowledgement and generated output are separate. Preserve submission
       // identity even when waiting or subsequent reads fail.
       const output = { submission: value, ...scope() };
-      try {
-        if (value.id) {
-          try {
-            output.progress = await value.wait({ timeoutMs: waitMs });
-          } catch (error) {
-            if (error.name !== "TimeoutError") throw error;
-            output.waitTimedOut = true;
-            output.progress = await value.progress();
-          }
-          output.results = await value.results();
-        }
-        output.snapshot = await context.session.poll();
-        output.pages = pages(output.snapshot);
-        remember(output.snapshot);
-        onDelivery(delivery());
-      } catch (error) {
-        output.readError = { name: error.name, status: error.status ?? 0, code: error.code ?? "read_failed" };
-      }
       return output;
     },
     async pages() {
@@ -175,6 +185,10 @@ async function main() {
           value = true;
         } else if (message.op === "describe") {
           value = await bridge.describe();
+        } else if (message.op === "restore") {
+          value = await bridge.restore(message.sessions);
+        } else if (message.op === "updates") {
+          value = await bridge.updates(message.sessionId, message.after, message.limit);
         } else if (message.op === "execute") {
           value = await bridge.execute(message.method, message.parameters);
         } else if (message.op === "pages") {
