@@ -141,9 +141,10 @@ Both actual interfaces (`technical.html` and `digital.html`) use
 `studio-client.js` and `studio/web/interax-pages.js`. Stable random chat IDs and
 bounded browser chat records support refresh and chat switching. Status and
 result cards update independently of narration. The first displayable result for
-each connected chat is acquired automatically; later results remain available
-as cards, and a newer revision of the presented item replaces the old panel. A
-manual card open can select any retained revision. Browser acquisition calls
+each connected chat is acquired automatically; task status remains in the chat
+log, and a newer revision of the presented item replaces the inline
+presentation area. The task log remains available for status and control while
+the page body stays in the dedicated presentation area. Browser acquisition calls
 `Result.prepare({mode: "display"})`; only then is HTML downloaded. The upstream
 sandbox renderer waits for load/font/paint readiness before `confirmDisplayed`.
 Failure, stale versions, GUI source checks and connection warnings remain active.

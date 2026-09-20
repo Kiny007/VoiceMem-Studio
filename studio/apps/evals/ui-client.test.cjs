@@ -17,9 +17,10 @@ class Element {
   close() { this.open = false; }
 }
 const buttons = node => node.children.flatMap(child => child.type === 'button' ? [child] : buttons(child));
-function fixture({ pagesGate = Promise.resolve() } = {}) {
+function fixture({ pagesGate = Promise.resolve(), inline = false } = {}) {
   const sockets = [], nodes = [], sources = [], events = [], notices = [], states = [], contexts = [], listeners = {};
   const conversation = { id: 'chat_one' }, changes = [], renders = [];
+  const interaxHost = inline ? new Element() : null;
   let current = conversation, releaseRender, interaction;
   let grant;
   class Socket {
@@ -76,14 +77,25 @@ function fixture({ pagesGate = Promise.resolve() } = {}) {
   ), context);
   const api = context.window.VMStudio;
   const client = api.create({onEvent:e => events.push(e), onState:state => states.push(state),
-    getConversation:() => current, onInteraxChanged:(owner, reveal) => changes.push({owner, reveal})});
+    getConversation:() => current, getInteraxHost:() => interaxHost,
+    onInteraxChanged:(owner, reveal) => changes.push({owner, reveal})});
   async function connected() {
     const sending = client.send('fixture'); await tick(); sockets[0].receive({type:'session_ready',mode:'llm_tts'}); await sending;
   }
   return {api, client, sockets, nodes, sources, events, notices, states, contexts, listeners, connected, grant:stream => grant(stream),
-    conversation, changes, renders, releaseRender:() => releaseRender(), interact:data => interaction(data),
+    conversation, changes, renders, interaxHost, releaseRender:() => releaseRender(), interact:data => interaction(data),
     select:next => { current = next; }, body:context.document.body};
 }
+
+test('interactive results mount in the dedicated inline display area', async () => {
+  const f = fixture({inline:true}); await f.connected();
+  const task = {sessionId:'sdk_inline',requestId:'req_inline',title:'Inline fixture',stage:'completed'};
+  const page = {...task,itemId:'item_inline',revision:1};
+  f.sockets[0].receive({type:'interax_state',space:'space_a',tasks:[task],pages:[page],errors:[]}); await tick();
+  assert.equal(f.interaxHost.hidden, false);
+  assert.equal(f.body.children.length, 0, 'Inline mode does not create a modal dialog');
+  f.client.cancel(); assert.equal(f.interaxHost.hidden, true);
+});
 
 test('current UI receives task cards and completes acquire, render, confirmation and GUI transport', async () => {
   const f = fixture(); await f.connected(); const socket = f.sockets[0];

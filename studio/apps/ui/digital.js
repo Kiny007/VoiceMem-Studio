@@ -281,6 +281,7 @@ addEventListener('keydown', e => { if(e.key === 'Escape' && state.memory) setMem
 addEventListener('resize', resizeInk);
 const voiceInput=VMStudio.create({
   getConversation: () => current,
+  getInteraxHost: () => $('interaxWorkbench'),
   onInteraxChanged(conversation, reveal) {
     if (conversation !== current) return;
     renderLog();

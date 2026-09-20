@@ -140,11 +140,11 @@ After asking for an interactive page (for example, a binary-search visualization
 look for a task card once the submission is acknowledged. It shows generation,
 waiting-for-answer, failure, cancellation or completion state. When the first
 displayable result arrives, Studio automatically acquires and opens its page
-panel while the spoken reply continues. A page may arrive after the spoken reply
+panel embedded in the active conversation view while the spoken reply continues. A page may arrive after the spoken reply
 if generation takes longer. Displayable results also add their title, summary
-and **打开交互页面** button for manual reopening or selecting another retained
-revision. One initial result is auto-presented for a connected chat; multiple
-available results remain as separate cards. The home page `/` links to the supported
+and a short task status entry in the conversation log. One initial result is
+auto-presented for a connected chat; the page body stays in the dedicated
+presentation area instead of becoming a page card. The home page `/` links to the supported
 `/ui/technical.html` and `/ui/digital.html` interfaces. Both receive Interax
 events through `studio-client.js`, reveal their conversation panel on task
 updates, and use the shared page component for acquisition, rendering and
@@ -156,7 +156,8 @@ The display path uses the official SDK throughout:
 ```text
 Request acknowledgement -> task card over Studio WebSocket
 Session.poll() for each owned Session -> task states and page cards
-  -> first displayable result -> Result.prepare({mode: "display"})
+  -> first displayable result -> embedded presentation area
+  -> Result.prepare({mode: "display"})
   -> HTML documents over Studio WebSocket -> upstream createIframeRenderer
   -> sandbox load, fonts and paint ready -> Presentation.confirmDisplayed()
   -> page postMessage -> Studio WebSocket -> Session.submitInteraction(data)
@@ -171,9 +172,10 @@ not invalidate an active Presentation. Automatic or manual opening captures its
 Session, item revision and a fresh selection token. Only that selection can
 confirm display or submit GUI data; old socket callbacks and switched spaces
 cannot confirm the new page. Actual rendering failure calls `reportFailure`.
-Errors appear in the panel. Updated versions replace the relevant cards and an
-active panel for the same item is replaced by the latest revision. Disconnect
-closes the panel and releases its renderer listeners and local watcher tasks.
+Errors appear in the inline display area. Updated versions replace the relevant
+cards and an active presentation for the same item is replaced by the latest
+revision. Disconnect hides the area and releases its renderer listeners and
+local watcher tasks.
 Cards then show that updates have stopped and their page buttons are disabled.
 The backend may continue working; connection-scoped bindings are not restored on
 reconnect, so keep the conversation connected to receive late results.

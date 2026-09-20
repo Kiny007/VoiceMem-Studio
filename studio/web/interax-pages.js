@@ -1,21 +1,24 @@
 /** Studio owns transport and UI; Interax's renderer owns sandboxing and readiness. */
 export class InteraxPages {
-  constructor({ send, isCurrent, notify, changed, autoPresent = true }) {
+  constructor({ send, isCurrent, notify, changed, host = null, autoPresent = true }) {
     Object.assign(this, { send, isCurrent, notify, changed, autoPresent });
+    this.inline = Boolean(host);
     this.active = null;
     this.autoOpened = new Set();
     this.autoTargets = new WeakMap();
     this.opening = new Map();
-    this.dialog = document.createElement('dialog');
-    this.dialog.className = 'interax-dialog';
-    this.dialog.innerHTML = '<header><strong></strong><button type="button">关闭</button></header>' +
+    this.dialog = host || document.createElement('dialog');
+    if (this.dialog.classList?.add) this.dialog.classList.add(this.inline ? 'interax-workbench' : 'interax-dialog');
+    else this.dialog.className = this.inline ? 'interax-workbench' : 'interax-dialog';
+    this.dialog.innerHTML = '<header><strong>交互演示</strong><button type="button">关闭演示</button></header>' +
       '<p role="status"></p><div class="interax-canvas"></div>';
-    document.body.append(this.dialog);
+    if (!this.inline) document.body.append(this.dialog);
+    else this.dialog.hidden = true;
     this.title = this.dialog.querySelector('strong');
     this.status = this.dialog.querySelector('p');
     this.canvas = this.dialog.querySelector('.interax-canvas');
     this.dialog.querySelector('button').onclick = () => this.close();
-    this.dialog.addEventListener('cancel', (event) => { event.preventDefault(); this.close(); });
+    if (!this.inline) this.dialog.addEventListener('cancel', (event) => { event.preventDefault(); this.close(); });
   }
 
   close() {
@@ -24,7 +27,8 @@ export class InteraxPages {
     this.active = null;
     for (const child of this.canvas.children) child._cleanup?.();
     this.canvas.replaceChildren();
-    this.dialog.close();
+    if (this.inline) this.dialog.hidden = true;
+    else this.dialog.close();
   }
 
   update(session, pages, socket, tasks = [], errors = []) {
@@ -124,6 +128,13 @@ export class InteraxPages {
       interrupted: '任务已中断', superseded: '任务已被后续请求替代', unknown: '正在确认任务状态…',
     };
     const appendPage = (page, container) => {
+      if (this.inline) {
+        const note = document.createElement('p');
+        note.className = 'interax-inline-note';
+        note.textContent = '成果已在上方交互演示区展示。';
+        container.append(note);
+        return;
+      }
       const card = document.createElement('div');
       card.className = 'turn ai interax-card';
       const title = document.createElement('strong');
@@ -197,7 +208,8 @@ export class InteraxPages {
     this.opening.set(key, active);
     this.title.textContent = page.title || 'Interax 交互页面';
     this.status.textContent = automatic ? '正在准备交互页面…' : '正在加载页面…';
-    this.dialog.showModal();
+    if (this.inline) this.dialog.hidden = false;
+    else this.dialog.showModal();
     if (!this.action(active, 'openPage', { page })) this.status.textContent = '连接已结束，请重新连接当前对话后打开已有成果。';
   }
 

@@ -17,7 +17,7 @@
     }
     return output;
   }
-  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {}, getConversation = () => null, onInteraxChanged = () => {} } = {}) {
+  function create({ onEvent = () => {}, onState = () => {}, onPhase = () => {}, getConversation = () => null, getInteraxHost = () => null, onInteraxChanged = () => {} } = {}) {
     let pages = null, pagesLoading = null;
     const sessionFor = owner => {
       const conversation = owner.conversation;
@@ -27,6 +27,7 @@
     async function taskEvent(owner, message) {
       pagesLoading ||= import(new URL('interax-pages.js', STUDIO_BASE).href)
         .then(({ InteraxPages }) => pages = new InteraxPages({
+        host: getInteraxHost(),
         send(session, data) {
           if (!active(run) || session.interaxSocket !== run.socket || session !== run.conversation) return false;
           sendJSON(run, data); return true;

@@ -311,6 +311,7 @@ document.addEventListener('keydown', e => {
 /* Voice lifecycle is local to this page. */
 const voice = VMStudio.create({
   getConversation: () => CONVERSATIONS.find(c => c.id === activeConv),
+  getInteraxHost: () => $('interaxWorkbench'),
   onInteraxChanged(conversation, reveal) {
     if (conversation.id !== activeConv) return;
     renderThread();
