@@ -8,7 +8,7 @@ const pagesSource = fs.readFileSync(require('node:path').join(__dirname, '../../
 const tick = () => new Promise(resolve => setImmediate(resolve));
 class Element {
   constructor() { this.children = []; this.textContent = ''; this.open = false; }
-  set innerHTML(value) { this.nodes = Object.fromEntries(['strong', 'p', 'button', '.interax-canvas'].map(key => [key, new Element()])); }
+  set innerHTML(value) { this.nodes = Object.fromEntries(['strong', 'p', '.interax-task-status', '.interax-render-status', 'button', '.interax-canvas'].map(key => [key, new Element()])); }
   querySelector(selector) { return this.nodes[selector]; }
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren() { this.children = []; }
@@ -91,8 +91,10 @@ test('interactive results mount in the dedicated inline display area', async () 
   const f = fixture({inline:true}); await f.connected();
   const task = {sessionId:'sdk_inline',requestId:'req_inline',title:'Inline fixture',stage:'completed'};
   const page = {...task,itemId:'item_inline',revision:1};
-  f.sockets[0].receive({type:'interax_state',space:'space_a',tasks:[task],pages:[page],errors:[]}); await tick();
+  f.sockets[0].receive({type:'interax_state',space:'space_a',tasks:[task],pages:[],errors:[]}); await tick();
   assert.equal(f.interaxHost.hidden, false);
+  assert(f.interaxHost.querySelector('.interax-task-status').textContent.includes('Inline fixture'));
+  f.sockets[0].receive({type:'interax_state',space:'space_a',tasks:[task],pages:[page],errors:[]}); await tick();
   assert.equal(f.body.children.length, 0, 'Inline mode does not create a modal dialog');
   f.client.cancel(); assert.equal(f.interaxHost.hidden, true);
 });

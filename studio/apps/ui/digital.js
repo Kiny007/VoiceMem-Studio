@@ -79,8 +79,7 @@ function renderLog(){
     }
     host.append(turn);
   });
-  const hasTasks = voiceInput.renderInterax(current, host);
-  if (!state.messages.length && !hasTasks) host.append(el('p','log-empty','还没有记录。说第一句话，它会出现在这里。'));
+  if (!state.messages.length) host.append(el('p','log-empty','还没有记录。说第一句话，它会出现在这里。'));
   requestAnimationFrame(()=>host.scrollTop = host.scrollHeight);
 }
 

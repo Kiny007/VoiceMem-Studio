@@ -5,17 +5,18 @@ export class InteraxPages {
     this.inline = Boolean(host);
     this.active = null;
     this.autoOpened = new Set();
-    this.autoTargets = new WeakMap();
     this.opening = new Map();
     this.dialog = host || document.createElement('dialog');
     if (this.dialog.classList?.add) this.dialog.classList.add(this.inline ? 'interax-workbench' : 'interax-dialog');
     else this.dialog.className = this.inline ? 'interax-workbench' : 'interax-dialog';
     this.dialog.innerHTML = '<header><strong>交互演示</strong><button type="button">关闭演示</button></header>' +
-      '<p role="status"></p><div class="interax-canvas"></div>';
+      '<p class="interax-task-status" role="status">等待交互成果…</p>' +
+      '<p class="interax-render-status" role="status"></p><div class="interax-canvas"></div>';
     if (!this.inline) document.body.append(this.dialog);
     else this.dialog.hidden = true;
     this.title = this.dialog.querySelector('strong');
-    this.status = this.dialog.querySelector('p');
+    this.taskStatus = this.dialog.querySelector('.interax-task-status');
+    this.status = this.dialog.querySelector('.interax-render-status');
     this.canvas = this.dialog.querySelector('.interax-canvas');
     this.dialog.querySelector('button').onclick = () => this.close();
     if (!this.inline) this.dialog.addEventListener('cancel', (event) => { event.preventDefault(); this.close(); });
@@ -39,6 +40,8 @@ export class InteraxPages {
     session.interaxSocket = socket;
     const currentKeys = new Set(pages.map((page) => this.key(page)));
     for (const key of this.autoOpened) if (!currentKeys.has(key)) this.autoOpened.delete(key);
+    this.renderTaskStatus(session, tasks, errors);
+    if (this.inline && (tasks.length || pages.length)) this.dialog.hidden = false;
     const active = this.active;
     if (active?.session === session && !pages.some((page) => this.key(page) === this.key(active.page))) {
       this.close();
@@ -88,26 +91,41 @@ export class InteraxPages {
 
   displayable(page) { return Boolean(page && page.canDisplay !== false); }
 
+  renderTaskStatus(session, tasks, errors) {
+    const task = tasks.at(-1);
+    if (!task) {
+      this.taskStatus.textContent = errors.length ? '交互任务状态暂不可用，正在重连…' : '等待交互成果…';
+      return;
+    }
+    const stages = {
+      accepted: '已接收', evaluating: '分析中', running: '生成中', waiting: '等待你的回答',
+      paused: '已暂停', completed: '已完成', failed: '生成失败', rejected: '未接受',
+      cancelled: '已取消', interrupted: '已中断', superseded: '已被新请求替代', unknown: '确认状态中',
+    };
+    let text = `${task.title || 'Interax 任务'} · ${stages[task.stage] || stages.unknown}`;
+    if (task.questions?.length) text += ` · ${task.questions[0].text || '需要回答'}`;
+    if (task.failedResults) text += ' · 部分成果失败';
+    if (errors.some((error) => error.sessionId === task.sessionId)) text += ' · 状态读取失败，保留当前页面';
+    this.taskStatus.textContent = text;
+  }
+
   scheduleAutomaticDelivery(session, pages) {
     if (!this.autoPresent || session.ui.interaxDisconnected) return;
-    const candidate = pages.find((page) => this.displayable(page));
+    const candidate = pages.filter((page) => this.displayable(page)).at(-1);
     if (!candidate) return;
-    const target = this.autoTargets.get(session);
-    if (target && target !== candidate.itemId) return;
-    if (!target) this.autoTargets.set(session, candidate.itemId);
     const key = this.key(candidate);
     if (this.autoOpened.has(key) || this.opening.has(key)) return;
     if (this.active?.session === session && this.key(this.active.page) === key) {
       this.autoOpened.add(key);
       return;
     }
-    if (this.active?.session === session && this.active.page.itemId !== candidate.itemId) return;
+    if (this.active && this.active.session !== session) return;
     this.autoOpened.add(key);
     Promise.resolve().then(() => {
       if (!this.isCurrent(session) || session.ui.interaxDisconnected) return;
       const current = (session.ui.interaxPages || []).find((page) => this.key(page) === key);
       if (!current || !this.displayable(current)) return;
-      if (this.active?.session === session && this.active.page.itemId !== current.itemId) return;
+      if (this.active && this.active.session !== session) return;
       this.open(session, current, { automatic: true });
     });
   }

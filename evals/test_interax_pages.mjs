@@ -6,7 +6,7 @@ import vm from 'node:vm';
 class Element {
   constructor() { this.children = []; this.textContent = ''; this.open = false; }
   set innerHTML(value) {
-    this.nodes = Object.fromEntries(['strong', 'p', 'button', '.interax-canvas'].map(key => [key, new Element()]));
+    this.nodes = Object.fromEntries(['strong', 'p', '.interax-task-status', '.interax-render-status', 'button', '.interax-canvas'].map(key => [key, new Element()]));
   }
   querySelector(selector) { return this.nodes[selector]; }
   append(...nodes) { this.children.push(...nodes); }
@@ -141,7 +141,7 @@ for (const name of ['technical', 'digital']) {
   const html = readFileSync(new URL(`../studio/apps/ui/${name}.html`, import.meta.url), 'utf8');
   const script = readFileSync(new URL(`../studio/apps/ui/${name}.js`, import.meta.url), 'utf8');
   assert(html.includes('src="studio-client.js"'));
-  assert(script.includes('renderInterax('));
+  assert(!script.includes('renderInterax('), `${name} UI must use the dedicated inline presentation area`);
   assert(script.includes('getConversation:'));
   new vm.Script(script);
 }

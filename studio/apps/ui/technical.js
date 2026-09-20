@@ -103,8 +103,7 @@ function renderThread() {
   const card = document.createElement('div');
   card.className = 'thread-card';
   conv.messages.forEach(m => card.appendChild(messageNode(m)));
-  const hasTasks = voice.renderInterax(conv, card);
-  if (!conv.messages.length && !hasTasks) {
+  if (!conv.messages.length) {
     const empty = document.createElement('div');
     empty.className = 'thread-empty';
     empty.textContent = '说点什么，VoiceMem 会先去记忆里找相关的内容，再回答。';
