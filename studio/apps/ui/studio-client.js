@@ -25,7 +25,8 @@
       return conversation;
     };
     async function taskEvent(owner, message) {
-      pagesLoading ||= import('/interax-pages.js').then(({ InteraxPages }) => pages = new InteraxPages({
+      pagesLoading ||= import(new URL('interax-pages.js', STUDIO_BASE).href)
+        .then(({ InteraxPages }) => pages = new InteraxPages({
         send(session, data) {
           if (!active(run) || session.interaxSocket !== run.socket || session !== run.conversation) return false;
           sendJSON(run, data); return true;

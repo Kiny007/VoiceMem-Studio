@@ -138,11 +138,13 @@ local bridge, and existing backend work may still exist.
 
 After asking for an interactive page (for example, a binary-search visualization),
 look for a task card once the submission is acknowledged. It shows generation,
-waiting-for-answer, failure, cancellation or completion state. Displayable
-results add their title, summary and **打开交互页面** button. A page may
-arrive after the spoken reply if generation takes longer. Click the button to
-open the page panel; close it to return to the conversation. Multiple available
-results have separate cards. The home page `/` links to the supported
+waiting-for-answer, failure, cancellation or completion state. When the first
+displayable result arrives, Studio automatically acquires and opens its page
+panel while the spoken reply continues. A page may arrive after the spoken reply
+if generation takes longer. Displayable results also add their title, summary
+and **打开交互页面** button for manual reopening or selecting another retained
+revision. One initial result is auto-presented for a connected chat; multiple
+available results remain as separate cards. The home page `/` links to the supported
 `/ui/technical.html` and `/ui/digital.html` interfaces. Both receive Interax
 events through `studio-client.js`, reveal their conversation panel on task
 updates, and use the shared page component for acquisition, rendering and
@@ -154,7 +156,7 @@ The display path uses the official SDK throughout:
 ```text
 Request acknowledgement -> task card over Studio WebSocket
 Session.poll() for each owned Session -> task states and page cards
-  -> user opens a card -> Result.prepare({mode: "display"})
+  -> first displayable result -> Result.prepare({mode: "display"})
   -> HTML documents over Studio WebSocket -> upstream createIframeRenderer
   -> sandbox load, fonts and paint ready -> Presentation.confirmDisplayed()
   -> page postMessage -> Studio WebSocket -> Session.submitInteraction(data)
@@ -165,15 +167,15 @@ Task cards bind Session and Request IDs to their original browser chat; creating
 another chat does not redirect already tracked tasks. Earlier Sessions' page
 buttons use the original Session for rendering and GUI submissions.
 Polling lists pages without acquiring them, so discovering several pages does
-not invalidate an active Presentation. Clicking a card captures its Session,
-item revision and a fresh selection token. Only that selection can confirm
-display or submit GUI data; old socket callbacks and switched spaces cannot
-confirm the new page. Actual rendering failure calls `reportFailure`. Errors
-appear in the panel. Updated versions replace the relevant cards and close an
-outdated open panel; open the latest card to view the revision. Disconnect closes
-the panel and releases its renderer listeners and local watcher tasks. Cards
-then show that updates have stopped and their page buttons are disabled. The
-backend may continue working; connection-scoped bindings are not restored on
+not invalidate an active Presentation. Automatic or manual opening captures its
+Session, item revision and a fresh selection token. Only that selection can
+confirm display or submit GUI data; old socket callbacks and switched spaces
+cannot confirm the new page. Actual rendering failure calls `reportFailure`.
+Errors appear in the panel. Updated versions replace the relevant cards and an
+active panel for the same item is replaced by the latest revision. Disconnect
+closes the panel and releases its renderer listeners and local watcher tasks.
+Cards then show that updates have stopped and their page buttons are disabled.
+The backend may continue working; connection-scoped bindings are not restored on
 reconnect, so keep the conversation connected to receive late results.
 
 Studio serves only Interax's `browser.js` and `src/viewport.js` renderer assets
@@ -214,7 +216,8 @@ existing UTF-8 fixtures and test subprocesses use their intended encoding.
 A local browser fixture serves both shipped interfaces and the real upstream
 iframe renderer with deterministic WebSocket events, without model credentials:
 `python -m uvicorn evals.serve_interax_ui_fixture:app --host 127.0.0.1 --port 8791`.
-Open either UI, send a text request, open the page card, and use its Next button.
+Open either UI, send a text request, wait for the page panel to open, and use its
+Next button. The card remains available for a manual reopen.
 The `/__test__/events` endpoint records acquisition, display confirmation and GUI
 actions. Stop the fixture server after verification. This checks frontend wiring
 and real sandbox rendering, not live model generation.

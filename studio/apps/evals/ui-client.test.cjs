@@ -69,8 +69,11 @@ function fixture({ pagesGate = Promise.resolve() } = {}) {
   } });
   vm.createContext(context);
   vm.runInContext(pagesSource.replace('export class InteraxPages', 'globalThis.InteraxPages = class InteraxPages')
-    .replace("await import('/interax-sdk/browser.js')", 'await loadRendererModule()'), context);
-  vm.runInContext(source.replace("import('/interax-pages.js')", 'loadPagesModule()'), context);
+    .replace("await import(new URL('../interax-sdk/browser.js', location.href).href)", 'await loadRendererModule()'), context);
+  vm.runInContext(source.replace(
+    "import(new URL('interax-pages.js', STUDIO_BASE).href)",
+    'loadPagesModule()',
+  ), context);
   const api = context.window.VMStudio;
   const client = api.create({onEvent:e => events.push(e), onState:state => states.push(state),
     getConversation:() => current, onInteraxChanged:(owner, reveal) => changes.push({owner, reveal})});
@@ -93,13 +96,18 @@ test('current UI receives task cards and completes acquire, render, confirmation
   socket.receive({type:'interax_state',space:'space_a',tasks:[{...task,stage:'completed'}],pages:[page],errors:[]}); await tick();
   host.replaceChildren(); f.client.renderInterax(f.conversation, host);
   assert.equal(buttons(host).find(b => b.textContent === '打开交互页面').textContent, '打开交互页面');
-  buttons(host).find(b => b.textContent === '打开交互页面').onclick(); const selection = socket.sent.at(-1);
+  const selection = socket.sent.at(-1);
   assert.equal(selection.type, 'interax_page_action'); assert.equal(selection.action, 'openPage');
   assert.equal(selection.space, 'space_a');
+  const autoCount = socket.sent.length;
+  socket.receive({type:'interax_state',space:'space_a',tasks:[{...task,stage:'completed'}],pages:[page],errors:[]}); await tick();
+  assert.equal(socket.sent.length, autoCount, 'The same page revision is auto-opened only once');
   socket.receive({type:'interax_page_result',space:'space_a',token:selection.token,action:'openPage',ok:true,
     result:{documents:[{mediaType:'text/html',content:'<button>Next</button>'}]}}); await tick();
   assert.equal(f.renders.length, 1);
   assert.equal(socket.sent.at(-1).action, 'openPage', 'No receipt before renderer readiness');
+  socket.receive({type:'answer_start',output_id:'voice-one',sample_rate:24000});
+  assert.equal(f.events.at(-1).type, 'answer_start', 'Page rendering must not block voice events');
   f.releaseRender(); await tick(); assert.equal(socket.sent.at(-1).action, 'confirmPage');
   socket.receive({type:'interax_page_result',space:'space_a',token:selection.token,action:'confirmPage',ok:true}); await tick();
   f.interact({action:'next'}); assert.equal(socket.sent.at(-1).action, 'interact');

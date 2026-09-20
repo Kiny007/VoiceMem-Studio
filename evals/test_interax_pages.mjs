@@ -35,14 +35,14 @@ const context = vm.createContext({
   } }),
 });
 vm.runInContext(source.replace('export class InteraxPages', 'globalThis.InteraxPages = class InteraxPages')
-  .replace("await import('/interax-sdk/browser.js')", 'await loadRenderer()'), context);
+  .replace("await import(new URL('../interax-sdk/browser.js', location.href).href)", 'await loadRenderer()'), context);
 const sent = [], notices = [];
 const session = { space: 'space_a', ui: {} };
 let current = session, connected = true;
 const ui = new context.InteraxPages({
   send: (owner, message) => { assert.equal(owner, session); if (!connected) return false; sent.push(message); return true; },
   isCurrent: owner => owner === current,
-  notify: message => notices.push(message), changed: () => {},
+  notify: message => notices.push(message), changed: () => {}, autoPresent: false,
 });
 const page = { sessionId: 'sdk_session', itemId: 'result_one', revision: 1, title: '<script>unsafe title</script>', summary: 'Binary search' };
 const socket = {};
@@ -76,7 +76,7 @@ await ui.result(response('interact'));
 assert.equal(ui.active.confirmed, true);
 ui.update(session, [{ ...page, revision: 2 }], socket);
 assert.equal(ui.dialog.open, false);
-assert.equal(notices.length, 1);
+assert.equal(notices.length, 0, 'A displayable replacement is delivered automatically without a stale-page toast');
 await ui.result(response('confirmPage'));
 assert.equal(ui.active, null, 'Late receipt must not resurrect an old selection');
 

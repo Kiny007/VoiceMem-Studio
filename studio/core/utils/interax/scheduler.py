@@ -203,7 +203,8 @@ class Scheduler:
                               "waitingStopped": bool(row["stopped"])})
             pages.extend({"sessionId": row["sid"], "requestId": item.get("requestId"),
                           "itemId": item["id"], "revision": item["revision"],
-                          "title": item.get("title"), "summary": item.get("summary")}
+                          "title": item.get("title"), "summary": item.get("summary"),
+                          "canDisplay": True}
                          for item in state.get("items", []) if item.get("canDisplay") and item.get("validity") == "current")
             if row["error"]:
                 errors.append({"sessionId": row["sid"], "code": row["error"]})

@@ -1,8 +1,11 @@
 /** Studio owns transport and UI; Interax's renderer owns sandboxing and readiness. */
 export class InteraxPages {
-  constructor({ send, isCurrent, notify, changed }) {
-    Object.assign(this, { send, isCurrent, notify, changed });
+  constructor({ send, isCurrent, notify, changed, autoPresent = true }) {
+    Object.assign(this, { send, isCurrent, notify, changed, autoPresent });
     this.active = null;
+    this.autoOpened = new Set();
+    this.autoTargets = new WeakMap();
+    this.opening = new Map();
     this.dialog = document.createElement('dialog');
     this.dialog.className = 'interax-dialog';
     this.dialog.innerHTML = '<header><strong></strong><button type="button">关闭</button></header>' +
@@ -16,6 +19,7 @@ export class InteraxPages {
   }
 
   close() {
+    if (this.active) this.opening.delete(this.key(this.active.page));
     this.active?.controller.abort();
     this.active = null;
     for (const child of this.canvas.children) child._cleanup?.();
@@ -29,12 +33,15 @@ export class InteraxPages {
     session.ui.interaxErrors = errors;
     session.ui.interaxDisconnected = false;
     session.interaxSocket = socket;
+    const currentKeys = new Set(pages.map((page) => this.key(page)));
+    for (const key of this.autoOpened) if (!currentKeys.has(key)) this.autoOpened.delete(key);
     const active = this.active;
     if (active?.session === session && !pages.some((page) => this.key(page) === this.key(active.page))) {
       this.close();
-      this.notify('交互页面已更新，请打开最新版本。');
+      if (!pages.some((page) => this.displayable(page))) this.notify('交互页面已更新，请打开最新版本。');
     }
     this.changed(session);
+    this.scheduleAutomaticDelivery(session, pages);
   }
 
   disconnect(socket) {
@@ -74,6 +81,32 @@ export class InteraxPages {
   }
 
   key(page) { return JSON.stringify([page.sessionId, page.itemId, page.revision]); }
+
+  displayable(page) { return Boolean(page && page.canDisplay !== false); }
+
+  scheduleAutomaticDelivery(session, pages) {
+    if (!this.autoPresent || session.ui.interaxDisconnected) return;
+    const candidate = pages.find((page) => this.displayable(page));
+    if (!candidate) return;
+    const target = this.autoTargets.get(session);
+    if (target && target !== candidate.itemId) return;
+    if (!target) this.autoTargets.set(session, candidate.itemId);
+    const key = this.key(candidate);
+    if (this.autoOpened.has(key) || this.opening.has(key)) return;
+    if (this.active?.session === session && this.key(this.active.page) === key) {
+      this.autoOpened.add(key);
+      return;
+    }
+    if (this.active?.session === session && this.active.page.itemId !== candidate.itemId) return;
+    this.autoOpened.add(key);
+    Promise.resolve().then(() => {
+      if (!this.isCurrent(session) || session.ui.interaxDisconnected) return;
+      const current = (session.ui.interaxPages || []).find((page) => this.key(page) === key);
+      if (!current || !this.displayable(current)) return;
+      if (this.active?.session === session && this.active.page.itemId !== current.itemId) return;
+      this.open(session, current, { automatic: true });
+    });
+  }
 
   cards(session, container) {
     const pages = session.ui.interaxPages || [];
@@ -153,12 +186,17 @@ export class InteraxPages {
       token: active.token, action, ...extra });
   }
 
-  open(session, page) {
+  open(session, page, { automatic = false } = {}) {
+    const key = this.key(page);
+    if (this.opening.has(key)) return this.opening.get(key);
+    if (this.active?.session === session && this.key(this.active.page) === key
+        && (this.opening.has(key) || this.active.confirmed)) return this.active;
     this.close();
-    const active = { session, page, token: crypto.randomUUID(), controller: new AbortController(), confirmed: false };
+    const active = { session, page, token: crypto.randomUUID(), controller: new AbortController(), confirmed: false, automatic };
     this.active = active;
+    this.opening.set(key, active);
     this.title.textContent = page.title || 'Interax 交互页面';
-    this.status.textContent = '正在加载页面…';
+    this.status.textContent = automatic ? '正在准备交互页面…' : '正在加载页面…';
     this.dialog.showModal();
     if (!this.action(active, 'openPage', { page })) this.status.textContent = '连接已结束，请重新连接当前对话后打开已有成果。';
   }
@@ -168,19 +206,21 @@ export class InteraxPages {
     if (!active || message.token !== active.token || message.space !== active.session.space || !this.isCurrent(active.session)) return;
     if (!message.ok) {
       active.confirmed = false;
+      this.opening.delete(this.key(active.page));
       this.status.textContent = '页面操作失败，请关闭后重新打开。' +
         (typeof message.error === 'string' ? message.error : (message.error?.code || ''));
       return;
     }
     if (message.action === 'confirmPage') {
       active.confirmed = true;
+      this.opening.delete(this.key(active.page));
       this.status.textContent = '页面已显示，可以操作。';
     } else if (message.action === 'interact') {
       active.confirmed = true;
       this.status.textContent = '操作已提交；生成的修订页面会出现在聊天中。';
     } else if (message.action === 'openPage') {
       try {
-        const { createIframeRenderer } = await import('/interax-sdk/browser.js');
+        const { createIframeRenderer } = await import(new URL('../interax-sdk/browser.js', location.href).href);
         active.controller.signal.throwIfAborted();
         const render = createIframeRenderer(this.canvas, { onInteraction: (data) => {
           if (!active.confirmed) return;
@@ -193,6 +233,7 @@ export class InteraxPages {
         if (this.action(active, 'confirmPage')) this.status.textContent = '正在确认页面显示…';
       } catch (error) {
         if (active.controller.signal.aborted) return;
+        this.opening.delete(this.key(active.page));
         this.status.textContent = '页面加载失败，请关闭后重新打开。';
         this.action(active, 'failPage', { message: 'Studio renderer failed' });
       }

@@ -140,12 +140,18 @@ capability), without a backend task or a task history.
 Both actual interfaces (`technical.html` and `digital.html`) use
 `studio-client.js` and `studio/web/interax-pages.js`. Stable random chat IDs and
 bounded browser chat records support refresh and chat switching. Status and
-result cards update independently of narration. Browser selection calls
+result cards update independently of narration. The first displayable result for
+each connected chat is acquired automatically; later results remain available
+as cards, and a newer revision of the presented item replaces the old panel. A
+manual card open can select any retained revision. Browser acquisition calls
 `Result.prepare({mode: "display"})`; only then is HTML downloaded. The upstream
 sandbox renderer waits for load/font/paint readiness before `confirmDisplayed`.
 Failure, stale versions, GUI source checks and connection warnings remain active.
-GUI operations carry a separate deduplication identity. Studio WebSocket messages
-are frontend-internal transport; Interax never pushes model or display commands.
+GUI operations carry a separate deduplication identity. Page import, rendering
+and confirmation are asynchronous with respect to model audio events, so a
+renderer failure cannot cancel TTS and voice playback does not delay page
+delivery. Studio WebSocket messages are frontend-internal transport; Interax
+never pushes model or display commands.
 
 Enabling `STUDIO_INTERAX_BASE_URL` requires Node >=22.12 and a supported remote
 DeepSeek/Qwen/OpenAI `llm_tts` provider. Early speculative replies remain disabled

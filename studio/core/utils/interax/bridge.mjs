@@ -29,7 +29,7 @@ export async function createBridge({ root, baseUrl, allowedMethods, fetch, waitM
   const pages = (snapshot) => (snapshot?.items || [])
     .filter((item) => item.canDisplay && item.documents?.length)
     .map((item) => ({ sessionId: snapshot.sessionId, requestId: item.requestId, itemId: item.id,
-      revision: item.revision, title: item.title, summary: item.summary }));
+      revision: item.revision, title: item.title, summary: item.summary, canDisplay: true }));
   const delivery = () => ({
     tasks: [...deliveries.values()].flatMap((state) => state.tasks),
     pages: [...deliveries.values()].flatMap((state) => state.pages),
